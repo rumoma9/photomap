@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 64 64">
+  <circle cx="32" cy="32" r="28" fill="#8A6A1E" stroke="#ffffff" stroke-width="2.5"/>
+  <g transform="translate(32,32) scale(0.72) translate(-32,-33.5)">
+  <g fill="#ffffff">
+    <!-- 上の屋根（軒先が反り上がる） -->
+    <path d="M17,25 Q24,23.5 27,17 H37 Q40,23.5 47,25 L45.5,26.5 H18.5 Z"/>
+    <!-- 上の層 -->
+    <rect x="24" y="26.5" width="16" height="6"/>
+    <!-- 下の屋根 -->
+    <path d="M10,38 Q19,36.5 23,31 H41 Q45,36.5 54,38 L52.5,39.5 H11.5 Z"/>
+    <!-- 下の層 -->
+    <rect x="17" y="39.5" width="30" height="8"/>
+    <!-- 縁・基壇 -->
+    <rect x="14" y="47.5" width="36" height="2.5" rx="0.5"/>
+  </g>
+  <g fill="#8A6A1E">
+    <!-- 上の層の窓 -->
+    <rect x="27" y="28" width="3.5" height="3"/>
+    <rect x="33.5" y="28" width="3.5" height="3"/>
+    <!-- 下の層の柱間 -->
+    <rect x="20" y="41" width="5" height="6.5"/>
+    <rect x="29.5" y="41" width="5" height="6.5"/>
+    <rect x="39" y="41" width="5" height="6.5"/>
+  </g>
+  </g>
+</svg>

@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10/ol.css">
+<script src="https://cdn.jsdelivr.net/npm/ol@10/dist/ol.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけiframe全体(高さ)を広げて確保する
+     (mkdocs_export.md.eexのiframe heightと合わせている)。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  .popup {
+    position: absolute;
+    display: none;
+    background: #fff;
+    color: #222;
+    border: 1px solid #888;
+    border-radius: 4px;
+    padding: 8px;
+    max-width: 140px;
+    transform: translate(-50%, -100%);
+    font-family: sans-serif;
+    font-size: 13px;
+  }
+  .popup img { max-width: 120px; max-height: 120px; display: block; margin-bottom: 4px; border-radius: 4px; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<div id="popup" class="popup"></div>
+<script>
+  const kmlText = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:gx=\"http://www.google.com/kml/ext/2.2\" xmlns:atom=\"http://www.w3.org/2005/Atom\" xmlns:xal=\"urn:oasis:names:tc:ciq:xsdschema:xAL:2.0\">\n    <Document>\n        <open>true</open>\n        <Style id=\"trackStyle\">\n            <LineStyle>\n                <color>FFFF00FF</color>\n                <width>3.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_0\">\n            <LineStyle>\n                <color>FF00FFFF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_1\">\n            <LineStyle>\n                <color>FF008080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_2\">\n            <LineStyle>\n                <color>FF00FF00</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_3\">\n            <LineStyle>\n                <color>FF008000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_4\">\n            <LineStyle>\n                <color>FFFFFF00</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_5\">\n            <LineStyle>\n                <color>FF808000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_6\">\n            <LineStyle>\n                <color>FFFF0000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_7\">\n            <LineStyle>\n                <color>FF800000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_8\">\n            <LineStyle>\n                <color>FFFF00FF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_9\">\n            <LineStyle>\n                <color>FF800080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_10\">\n            <LineStyle>\n                <color>FF0000FF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_11\">\n            <LineStyle>\n                <color>FF000080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_12\">\n            <LineStyle>\n                <color>FF194C80</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_13\">\n            <LineStyle>\n                <color>FF000000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Folder>\n            <Placemark><name>城山湖2</name>\n                <styleUrl>#trackStyle</styleUrl>\n                <LineString>\n                    <coordinates>139.298258,35.605785,171.0 139.298278,35.605791,171.0 139.298477,35.605347,169.5 139.298604,35.605068,170.0 139.29868,35.604934,170.0 139.298845,35.604678,170.0 139.298926,35.604558,168.5 139.29886,35.604565,170.0 139.298789,35.604573,169.5 139.298671,35.604586,171.0 139.298542,35.604584,172.0 139.298301,35.604496,174.0 139.298172,35.604436,172.8 139.29784,35.604441,171.8 139.297726,35.604423,171.5 139.297391,35.604336,171.5 139.29729,35.604323,172.8 139.297113,35.604346,176.0 139.296904,35.604361,179.0 139.296785,35.604378,179.5 139.296641,35.604376,182.0 139.296389,35.604359,187.0 139.29613,35.604315,193.0 139.29599,35.604255,197.0 139.295826,35.604151,200.8 139.29571,35.604046,199.5 139.295599,35.60393,198.5 139.295486,35.603847,198.5 139.295304,35.60377,199.5 139.295104,35.603697,202.0 139.294941,35.603651,204.0 139.294773,35.603652,207.0 139.294554,35.603695,210.0 139.294372,35.603719,211.8 139.294157,35.603761,215.0 139.293686,35.603828,214.8 139.293413,35.603858,216.0 139.293238,35.603866,214.5 139.292982,35.603808,214.0 139.292873,35.603743,213.0 139.292786,35.603651,213.0 139.2927756,35.6036522,213.0 139.292784,35.603648,213.0 139.292745,35.603593,213.0 139.292665,35.603506,211.5 139.292575,35.603414,212.0 139.292471,35.603359,212.0 139.292265,35.603289,211.5 139.292048,35.603228,213.0 139.291741,35.603164,215.0 139.291526,35.603042,216.0 139.291271,35.602979,218.0 139.291174,35.602946,219.0 139.291028,35.602833,220.0 139.290679,35.60283,223.0 139.290613,35.602818,224.0 139.290548,35.602798,223.5 139.290503,35.602751,225.0 139.290444,35.602637,224.8 139.290355,35.602517,227.0 139.290271,35.602454,227.0 139.290043,35.602359,227.0 139.289953,35.602337,227.0 139.289863,35.602343,227.0 139.289759,35.602392,227.5 139.289649,35.602456,230.0 139.289497,35.602501,230.5 139.289363,35.60253,230.8 139.289046,35.602611,233.0 139.288871,35.602636,235.0 139.288692,35.602626,236.0 139.288477,35.602595,238.0 139.28838,35.602601,239.0 139.288278,35.602618,237.5 139.288195,35.60266,236.5 139.288127,35.602709,237.0 139.288016,35.602846,235.8 139.287972,35.602939,237.0 139.28792,35.603133,237.8 139.287871,35.603251,238.8 139.287834,35.603326,239.5 139.287786,35.603393,240.0 139.287739,35.603431,238.5 139.287661,35.603442,239.0 139.287575,35.603424,239.0 139.287501,35.603396,239.0 139.287443,35.603385,240.0 139.287352,35.60338,241.0 139.287102,35.603407,243.0 139.286976,35.603395,244.0 139.286771,35.603356,246.0 139.286621,35.603372,246.5 139.286504,35.603376,247.5 139.286287,35.603354,250.0 139.286129,35.603372,250.5 139.285879,35.603461,254.0 139.28568,35.603459,255.0 139.285563,35.603472,254.5 139.28537,35.603549,256.0 139.285224,35.603588,255.8 139.285093,35.603651,257.0 139.284962,35.603678,257.0 139.284509,35.603644,257.8 139.284328,35.603584,260.0 139.284036,35.603464,261.5 139.28389,35.603415,263.0 139.283788,35.603395,262.5 139.283679,35.603391,263.0 139.283563,35.603415,261.8 139.283465,35.603453,262.0 139.283363,35.603475,260.5 139.28323,35.603488,261.5 139.283067,35.603526,264.0 139.282955,35.603538,265.0 139.28287,35.603522,265.8 139.282782,35.603492,268.0 139.282634,35.603379,270.8 139.282581,35.603355,271.5 139.282508,35.603351,272.5 139.282446,35.603329,274.0 139.282363,35.603238,273.5 139.282275,35.603236,275.0 139.282148,35.60325,276.0 139.281989,35.603256,277.0 139.281783,35.603228,276.5 139.28158,35.603215,278.0 139.2814,35.603236,279.0 139.281226,35.603282,281.0 139.280998,35.603343,284.0 139.280895,35.603387,283.8 139.280806,35.603453,283.8 139.2807833,35.6034333,284.0 139.280806,35.603453,283.8 139.280802,35.603457,283.8 139.280749,35.603516,284.0 139.280683,35.60357,284.0 139.280454,35.603716,281.8 139.280322,35.603776,282.0 139.280224,35.603842,282.0 139.280014,35.604009,282.5 139.279872,35.60411,283.8 139.279678,35.604235,286.0 139.279502,35.604383,287.0 139.279414,35.604448,287.5 139.279298,35.604511,290.0 139.279248,35.604548,289.8 139.279152,35.604628,293.0 139.279079,35.60472,294.5 139.279009,35.604766,296.5 139.278937,35.60483,300.0 139.278747,35.604953,304.5 139.278622,35.605039,307.5 139.278561,35.605081,308.8 139.278477,35.605143,311.0 139.278485,35.605157,311.0 139.278485,35.605156,311.0 139.278509,35.605193,309.5 139.278581,35.605252,309.0 139.278588,35.605334,307.8 139.278622,35.6054,306.8 139.278467,35.605349,310.5 139.278409,35.605417,313.0 139.278355,35.605373,314.0 139.278287,35.605456,314.5 139.27817,35.605427,317.0 139.278071,35.605449,317.5 139.277948,35.605404,318.8 139.277803,35.605429,320.8 139.277653,35.605513,323.8 139.277494,35.605586,328.0 139.277437,35.605626,329.0 139.27722,35.605576,327.8 139.277038,35.605581,328.5 139.276844,35.60562,331.0 139.276585,35.605704,332.0 139.27644,35.60574,329.5 139.276342,35.605728,327.8 139.276286,35.6057,326.5 139.2762887,35.6056978,327.0 139.276287,35.6057,326.5 139.276227,35.60567,325.5 139.276165,35.605632,325.0 139.276092,35.605629,323.5 139.276105,35.605556,324.0 139.275981,35.6055,321.8 139.275856,35.605428,320.5 139.275558,35.605293,318.8 139.275084,35.605107,321.0 139.274997,35.605036,323.0 139.274547,35.604621,317.0 139.274454,35.604544,316.0 139.274368,35.604496,315.0 139.274292,35.60446,313.5 139.273619,35.60425,314.0 139.273219,35.604083,316.0 139.272971,35.603962,316.0 139.272892,35.6039,315.5 139.272851,35.603847,315.8 139.272829,35.603779,317.0 139.27283,35.603726,317.0 139.272858,35.603666,317.0 139.2729,35.60362,315.5 139.272744,35.603596,318.0 139.272336,35.603558,322.0 139.272243,35.603567,321.5 139.272169,35.603602,321.5 139.272141,35.603641,322.0 139.272117,35.603714,321.0 139.272122,35.60383,318.8 139.272093,35.603859,319.0 139.272003,35.603853,318.5 139.271819,35.603803,321.0 139.271738,35.603767,320.8 139.271656,35.603686,322.8 139.271578,35.603627,323.8 139.271439,35.603591,325.0 139.2714432,35.6035849,325.0 139.27144,35.603591,325.0 139.27124,35.60354,326.0 139.271185,35.603525,326.0 139.271048,35.603498,325.8 139.270901,35.603506,326.0 139.270742,35.603557,325.0 139.27064,35.60361,324.0 139.270542,35.603648,323.0 139.270417,35.60367,321.8 139.270279,35.603649,322.5 139.270189,35.603609,325.0 139.270106,35.603543,326.5 139.269973,35.603383,332.8 139.269861,35.603314,335.0 139.269666,35.603245,334.0 139.269517,35.603216,334.0 139.26947,35.603158,335.0 139.269388,35.603109,336.0 139.269249,35.602978,338.8 139.269187,35.602843,342.8 139.269085,35.602745,346.0 139.269002,35.602583,350.0 139.268881,35.602389,350.0 139.268698,35.602242,346.5 139.26855,35.602157,347.0 139.268314,35.602066,348.0 139.268182,35.602069,348.0 139.267732,35.601957,351.0 139.26741,35.60185,357.0 139.267392,35.601816,358.0 139.267315,35.60176,359.8 139.2671636,35.601703,363.0 139.2670415,35.6016239,366.0 139.267046,35.60162,366.0 139.267018,35.601592,365.8 139.266977,35.601463,369.0 139.266936,35.601186,374.5 139.266872,35.60106,379.5 139.266545,35.600842,398.8 139.266364,35.600772,403.0 139.266364,35.600772,403.0 139.266291,35.60075,404.0 139.266177,35.600846,405.5 139.266045,35.600781,408.0 139.266107,35.600702,406.0 139.266158,35.600612,403.5 139.266206,35.6005,403.0 139.266253,35.600303,401.0 139.266265,35.600186,400.0 139.266251,35.60005,397.8 139.2662486,35.6000511,398.0 139.266251,35.60005,397.8 139.266251,35.60005,397.8 139.266247,35.59991,396.0 139.266283,35.599771,392.5 139.266298,35.599642,389.5 139.266299,35.599549,387.5 139.266294,35.599444,386.0 139.266311,35.599398,385.0 139.266359,35.599348,383.5 139.26652,35.599355,385.5 139.266633,35.599373,388.0 139.266755,35.599373,385.8 139.266873,35.599384,383.5 139.267251,35.599398,375.5 139.267251,35.599398,375.5 139.267577,35.59926,372.0 139.26766,35.599234,371.8 139.267756,35.599214,373.0 139.267825,35.599188,372.8 139.267938,35.599094,371.8 139.267979,35.59904,370.8 139.268154,35.598761,368.0 139.268182,35.598666,367.0 139.268178,35.598498,364.0 139.268194,35.598373,362.0 139.268216,35.598313,360.8 139.268302,35.598202,359.5 139.268354,35.598179,359.5 139.268427,35.598175,360.0 139.268543,35.598217,361.0 139.2687,35.598252,360.8 139.269059,35.598315,364.0 139.269167,35.598319,364.0 139.269201,35.598301,362.0 139.269181,35.598277,361.0 139.269001,35.598239,360.0 139.268906,35.598208,357.8 139.268783,35.598146,355.5 139.268397,35.597864,349.0 139.268281,35.597784,346.0 139.268197,35.597708,341.0 139.268134,35.59762,335.8 139.2681,35.597558,334.0 139.268043,35.59753,330.5 139.267994,35.597368,326.0 139.2679802,35.5973715,326.0 139.267994,35.597369,326.0 139.267992,35.59736,326.0 139.267937,35.597131,318.8 139.267929,35.597099,319.0 139.268015,35.597077,320.0 139.2681,35.597119,321.8 139.268128,35.59734,327.8 139.268151,35.597412,331.0 139.268184,35.597474,332.5 139.268242,35.597549,337.0 139.268426,35.597662,341.0 139.268514,35.59769,339.5 139.268611,35.597706,339.0 139.268736,35.597741,338.0 139.268866,35.597747,336.0 139.269008,35.597721,332.0 139.269117,35.59771,329.0 139.269205,35.597713,326.5 139.269303,35.597726,326.0 139.269334,35.597723,325.0 139.269334,35.597723,325.0 139.269413,35.597718,323.0 139.269499,35.597699,320.0 139.269635,35.597649,312.8 139.269738,35.597627,310.0 139.269857,35.597616,305.5 139.270334,35.59766,296.5 139.270544,35.597698,293.5 139.270683,35.597732,291.8 139.270788,35.597774,292.0 139.270989,35.597874,291.0 139.271249,35.597981,287.0 139.27138,35.598066,286.0 139.271442,35.598153,287.0 139.271441,35.598227,290.0 139.271426,35.598284,293.0 139.271424,35.598332,295.0 139.27144,35.598369,294.0 139.271472,35.59841,291.5 139.271509,35.598436,289.5 139.271563,35.598463,288.0 139.271748,35.598544,280.0 139.271799,35.598548,278.0 139.271853,35.598527,277.0 139.271885,35.598482,275.5 139.271886,35.598392,276.8 139.271872,35.59831,278.0 139.271874,35.598221,275.0 139.271955,35.597918,264.0 139.27201,35.597779,257.8 139.272051,35.59771,256.0 139.272083,35.597668,254.0 139.272135,35.597624,252.0 139.272314,35.59761,247.5 139.272395,35.597612,247.0 139.272485,35.597626,246.0 139.272596,35.597669,244.5 139.272681,35.597715,244.8 139.27278,35.59779,245.5 139.272907,35.597871,247.0 139.273022,35.597937,246.8 139.273184,35.598014,248.0 139.273503,35.598086,245.0 139.273617,35.598119,244.0 139.273723,35.59813,242.0 139.273788,35.598159,241.0 139.273883,35.598216,239.5 139.27394,35.59827,239.5 139.273991,35.598308,240.0 139.274028,35.598318,238.5 139.274064,35.598301,237.5 139.274085,35.59827,236.5 139.274041,35.598103,235.0 139.274041,35.59792,230.8 139.274065,35.597851,230.0 139.274109,35.597758,226.5 139.274129,35.59767,224.5 139.274197,35.59751,220.8 139.274245,35.597435,218.0 139.27441,35.597282,210.0 139.274605,35.597087,202.0 139.274738,35.596987,197.5 139.274856,35.596951,197.0 139.275055,35.596922,195.5 139.275153,35.596943,197.0 139.275325,35.597007,197.8 139.275638,35.597106,200.5 139.2757,35.597157,203.0 139.275773,35.597198,204.0 139.276026,35.59732,207.5 139.276163,35.597377,209.8 139.276212,35.597381,211.0 139.276267,35.597366,209.8 139.276301,35.597349,209.5 139.27636,35.597306,208.5 139.276415,35.597249,208.0 139.276462,35.597184,205.5 139.276641,35.596755,196.0 139.276694,35.596685,194.0 139.276756,35.596621,193.0 139.277056,35.596424,190.0 139.277147,35.596348,189.0 139.277321,35.596118,186.0 139.277361,35.596016,185.0 139.277377,35.595925,182.8 139.277381,35.595809,182.0 139.27737,35.595562,179.8 139.277679,35.595533,181.0 139.2782,35.59547,178.8 139.278289,35.595467,178.5 139.278258,35.595102,174.5 139.278051,35.595067,176.0 139.27799,35.595023,176.0 139.278331,35.595036,174.0 139.278374,35.595025,174.0 139.278561,35.594944,173.0 139.278674,35.594877,172.0 139.278702,35.594853,170.5 139.278761,35.594777,169.5 139.278786,35.594728,170.0 139.278905,35.59468,169.0 139.27905,35.594601,168.0 139.279888,35.593948,161.5 139.280343,35.593601,160.0 139.280393,35.593582,160.0 139.280423,35.593584,160.0 139.28044,35.593612,160.0 139.280487,35.593792,160.8 139.280512,35.593831,162.0 139.2806067,35.593921,162.0 139.2806761,35.5941079,164.0 139.2807723,35.594228,165.0 139.2808225,35.5942509,165.0 139.2809229,35.5942886,164.0 139.2809115,35.5942081,164.0 139.280986,35.594118,162.5 139.281065,35.594163,162.5 139.28108,35.594183,162.5 139.281134,35.594217,163.0 139.281189,35.594252,163.0 139.281233,35.594289,163.0 139.281256,35.594323,163.0 139.281325,35.594414,163.0 139.281384,35.594474,161.8 139.281538,35.594604,161.5 139.281662,35.594708,161.5 139.281975,35.594972,165.0 139.282084,35.595063,167.0 139.282161,35.595127,169.0 139.28227,35.595218,171.0 139.282338,35.595275,172.0 139.282427,35.595352,174.0 139.282427,35.595352,174.0 139.282454,35.595316,172.5 139.282507,35.595342,174.0 139.282555,35.595359,173.8 139.282632,35.595367,175.0 139.282799,35.595365,176.0 139.28297,35.595376,175.8 139.283076,35.595395,176.5 139.28407,35.595598,179.5 139.284377,35.595639,181.0 139.284638,35.595646,181.0 139.2848,35.595632,181.0 139.284985,35.595599,180.5 139.2849938,35.5956305,181.0 139.2849976,35.5964575,198.0 139.2850172,35.5964151,197.0 139.2849762,35.5964313,197.0 139.2848922,35.5964396,197.0 139.2847961,35.5964777,197.0 139.2847781,35.5964238,196.0 139.284702,35.596438,194.8 139.284718,35.596532,196.5 139.284717,35.596693,199.8 139.284731,35.596777,203.0 139.284776,35.596907,205.5 139.284865,35.59702,209.5 139.284964,35.597103,214.0 139.285211,35.597344,222.8 139.28539,35.597565,231.0 139.285395,35.597566,231.0 139.2853981,35.5975623,231.0 139.285396,35.597566,231.0 139.285427,35.597574,230.8 139.285518,35.597535,232.0 139.285585,35.59752,233.0 139.285661,35.597569,233.8 139.28573,35.597668,237.0 139.286022,35.597682,241.0 139.286166,35.597596,239.8 139.286347,35.5976,241.5 139.2863261,35.597667,243.0 139.286328,35.597599,242.0 139.286648,35.597607,246.0 139.286772,35.597769,249.0 139.286772,35.597902,250.5 139.286812,35.598091,255.0 139.286948,35.598225,257.0 139.287048,35.598227,255.5 139.2871,35.598184,254.5 139.287321,35.597918,249.0 139.287984,35.597709,243.0 139.288497,35.597587,238.5 139.288956,35.597508,236.0 139.289292,35.597479,234.0 139.289557,35.597587,231.5 139.289769,35.597846,229.8 139.290105,35.597947,227.5 139.290195,35.597991,226.8 139.2901953,35.5979934,227.0 139.290196,35.597991,226.8 139.290326,35.598054,227.0 139.290494,35.598212,225.5 139.290732,35.598349,226.0 139.291015,35.598428,224.0 139.291266,35.598568,223.0 139.291627,35.598567,223.0 139.291755,35.598516,221.8 139.292067,35.598479,220.5 139.292351,35.598475,219.5 139.292555,35.598327,218.5 139.29266,35.598326,219.0 139.292861,35.598323,216.8 139.293122,35.59835,216.0 139.29348,35.598316,214.0 139.293535,35.598322,212.5 139.293849,35.598357,210.8 139.293978,35.598419,211.0 139.294029,35.598585,211.0 139.294029,35.598664,211.0 139.294052,35.598821,211.0 139.294029,35.598963,210.5 139.294001,35.599046,210.8 139.294264,35.599075,210.0 139.294248,35.599163,209.5 139.294245,35.599502,206.5 139.294545,35.599499,208.0 139.294918,35.599497,209.0 139.294951,35.599556,210.0 139.29514,35.599578,210.5 139.295156,35.599511,209.8 139.295241,35.599426,209.5 139.295282,35.599375,210.0 139.295291,35.599293,208.5 139.295346,35.599138,208.0 139.295419,35.59909,208.0 139.295396,35.599007,205.8 139.295491,35.598992,207.0 139.295659,35.598981,206.8 139.295809,35.598907,207.0 139.296027,35.598867,204.5 139.296214,35.598885,203.8 139.296377,35.598885,202.8 139.296559,35.598857,202.0 139.296613,35.598848,200.8 139.296822,35.598842,201.0 139.29729,35.598837,199.8 139.297584,35.598856,200.5 139.298108,35.598885,205.8 139.298394,35.598922,209.0 139.298516,35.598885,206.8 139.298635,35.598892,207.0 139.29886,35.598855,205.0 139.298997,35.598927,205.0 139.299198,35.599055,205.0 139.299343,35.599132,203.0 139.299431,35.599238,201.0 139.299361,35.59926,202.0 139.299327,35.599285,202.0 139.299289,35.599312,201.5 139.299294,35.599324,202.0 139.299412,35.599313,200.0 139.299506,35.599336,198.0 139.300004,35.599553,187.0 139.300437,35.599748,184.0 139.300599,35.59983,184.0 139.30072,35.599912,183.8 139.300886,35.600045,184.8 139.301082,35.600248,186.0 139.30115,35.600305,186.0 139.301258,35.600336,184.8 139.301338,35.600485,187.0 139.301353,35.600541,186.5 139.3013537,35.6005416,187.0 139.301354,35.600541,186.5 139.301338,35.600485,187.0 139.301258,35.600336,184.8 139.301386,35.600345,185.0 139.301459,35.600331,183.5 139.301549,35.600305,182.8 139.301699,35.600315,181.8 139.302023,35.600351,180.0 139.302208,35.600352,178.0 139.302552,35.600333,175.0 139.302808,35.599761,171.8 139.302857,35.599624,172.0 139.30292,35.599408,171.0 139.302939,35.599284,169.5 139.302937,35.599271,169.5 139.302925,35.59926,170.0 139.302926,35.599213,170.0 139.302927,35.599165,170.0 139.302952,35.599135,170.0 139.303007,35.599136,170.0 139.303066,35.599136,170.0 139.303066,35.598899,168.8 139.303031,35.598731,168.5 139.3030435,35.5987314,169.0</coordinates>\n                </LineString>\n            </Placemark>\n            <Folder>\n                <name>Marks [Km]</name>\n                <visibility>false</visibility>\n                <open>false</open>\n                <Placemark>\n                    <name>1. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2904656,35.6026791,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>2. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2807933,35.6034667,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>3. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2725069,35.603574,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>4. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2668433,35.5993812,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>5. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2719259,35.5980276,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>6. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2784853,35.594977,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>7. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.2849811,35.5971196,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>8. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.293982,35.598432,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>9. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.3016185,35.6003096,0</coordinates>\n                    </Point>\n                </Placemark>\n            </Folder>\n        </Folder>\n    \n        <Placemark>\n            <name>小松ハイキングコース</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2927756,35.6036522,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>評議原</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2807833,35.6034333,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>金刀比羅宮（龍籠山）</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2784559,35.6051701,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>城山湖</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2709672,35.6048876,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>峯の薬師</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.26783,35.59704,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>三嶋神社（中沢）</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2806379,35.5945178,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>普門寺</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2852747,35.5964456,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>川尻八幡宮付近</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.2981192,35.5988361,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>川尻八幡宮</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.301225,35.600607,0</coordinates>\n            </Point>\n        </Placemark>\n</Document></kml>";
+  const photosByWaypoint = {};
+  const iconsByWaypoint = {};
+  const DEFAULT_ICON = "photo_camera";
+
+  // waypoint名には、以前のphotodbエクスポート機能(廃止済み)が付与した
+  // 末尾の"_<uuid>"が残っていることがある(レガシーデータ)。表示用には
+  // それを取り除く(photosByWaypoint/iconsByWaypointのキーは生の名前の
+  // ままなので、マッチングには使わない)。
+  function displayName(name) {
+    const i = name.lastIndexOf("_");
+    return i === -1 ? name : name.slice(0, i);
+  }
+
+  // アイコン画像はエクスポート時にこのページと同じディレクトリの
+  // icons/<key>.svgへコピー済み(写真のimages/と同じ考え方。
+  // MkdocsExport.copy_used_icons!/2参照)。アイコンキーごとにStyleを
+  // キャッシュし、同じアイコンを使う複数のwaypointで使い回す。
+  const iconStyleCache = new Map();
+  function iconStyle(icon) {
+    const key = icon || DEFAULT_ICON;
+    let style = iconStyleCache.get(key);
+    if (!style) {
+      style = new ol.style.Style({
+        image: new ol.style.Icon({
+          anchor: [0.5, 0.5],
+          anchorXUnits: "fraction",
+          anchorYUnits: "fraction",
+          // crossOriginは付けない: アイコンはこのページと同じディレクトリの
+          // ローカルファイル(icons/<key>.svg)なので不要。file://で開いた場合、
+          // originが"null"になりCORSモードのfetch自体がブロックされる
+          // (`Access to image at 'file:///...' from origin 'null' has been
+          // blocked by CORS policy`)ため、むしろ付けると読み込みに失敗する。
+          src: `icons/${key}.svg`,
+        }),
+      });
+      iconStyleCache.set(key, style);
+    }
+    return style;
+  }
+
+  function labelStyle(name) {
+    return new ol.style.Style({
+      text: new ol.style.Text({
+        text: name,
+        font: "bold 14px Arial,Verdana,Courier New",
+        overflow: true,
+        fill: new ol.style.Fill({ color: "#222" }),
+        stroke: new ol.style.Stroke({ color: "#eee", width: 2 }),
+        textAlign: "left",
+        offsetX: 22,
+      }),
+    });
+  }
+
+  const source = new ol.source.Vector();
+  const format = new ol.format.KML({ extractStyles: true });
+  const features = format.readFeatures(kmlText, {
+    dataProjection: "EPSG:4326",
+    featureProjection: "EPSG:4326",
+  });
+
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry) continue;
+    const type = geometry.getType();
+
+    if (type === "LineString") {
+      feature.setStyle(
+        new ol.style.Style({
+          stroke: new ol.style.Stroke({ color: "#0000FF", width: 3 }),
+        }),
+      );
+      source.addFeature(feature);
+    } else if (type === "Point") {
+      const name = feature.get("name") || "";
+      if (name.endsWith(". Km")) continue;
+      feature.setStyle([iconStyle(iconsByWaypoint[name]), labelStyle(displayName(name))]);
+      source.addFeature(feature);
+    }
+  }
+
+  const map = new ol.Map({
+    target: "map",
+    layers: [
+      new ol.layer.Tile({ source: new ol.source.OSM() }),
+      new ol.layer.Vector({ source: source }),
+    ],
+    view: new ol.View({ projection: "EPSG:4326", center: [0, 0], zoom: 2 }),
+    controls: [new ol.control.Zoom(), new ol.control.Attribution()],
+  });
+  map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+
+  // tracklog(高度付きのgx:Track由来LineString)がある場合だけ、
+  // 距離・高度の断面図をc3.jsで表示する。stroll.jsのChart/getTrackと
+  // 同じ考え方(区間ごとの距離を積算してdistance/elevationの列を作る)。
+  // timestampは<gx:Track>の<when>から来る4番目の座標成分(coord[3]、
+  // ミリ秒epoch)の区間差分。<when>は必須要素ではないため無い場合は
+  // nullのままにし、後段の再生アニメーションはcanAnimateがfalseになって
+  // 無効化される(assets/svelte/map.tsのgetTrackStatsと同じ前提)。
+  const tracks = [];
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry || geometry.getType() !== "LineString") continue;
+    const coords = geometry.getCoordinates();
+    if (coords.length === 0 || coords[0].length < 3) continue;
+
+    tracks.push({ distance: 0, timestamp: 0, coord: coords[0] });
+    for (let i = 0; i < coords.length - 1; i++) {
+      const distance = ol.sphere.getDistance(coords[i], coords[i + 1]);
+      const hasTime = coords[i].length > 3 && coords[i + 1].length > 3;
+      let timestamp = hasTime ? coords[i + 1][3] - coords[i][3] : null;
+      // <when>が時系列順である前提が崩れている(逆順/重複KMLの編集ミスなど)場合、
+      // 所要時間が負になり再生アニメーションのCSS transitionが不正な値になる。
+      // <when>が無い場合と同様nullにして、canAnimateがfalseになり再生自体を
+      // 無効化されるようにする(一部区間だけ壊れた状態での再生はサポートしない)。
+      if (timestamp !== null && timestamp < 0) {
+        console.warn(
+          `[stroll] track point ${i + 1} has an out-of-order <when> timestamp ` +
+            `(prev=${coords[i][3]}, next=${coords[i + 1][3]}, Δ=${timestamp}ms). ` +
+            `Disabling playback animation for this track.`,
+        );
+        timestamp = null;
+      }
+      tracks.push({ distance: distance, timestamp: timestamp, coord: coords[i + 1] });
+    }
+  }
+
+  // 全区間に時刻があるトラックだけ再生アニメーションを有効にする
+  // (一部区間だけ時刻ありという半端な状態はサポートしない)。
+  const canAnimate =
+    tracks.length > 1 && tracks.slice(1).every((t) => typeof t.timestamp === "number");
+
+  if (tracks.length > 0) {
+    document.body.classList.add("has-chart");
+    map.updateSize();
+
+    const chart = c3.generate({
+      bindto: "#chart",
+      padding: { top: 10, right: 10 },
+      data: { x: "x", columns: [] },
+      axis: {
+        x: {
+          type: "indexed",
+          label: { text: "距離 (km)", position: "outer-center" },
+          tick: {
+            format: (v) => `${Math.round(v * 10) / 10}`,
+            count: 20,
+          },
+        },
+        y: { label: { text: "高度 (m)", position: "outer-middle" } },
+      },
+      legend: { show: false },
+    });
+
+    let total_distance = 0;
+    const distance = [];
+    const elevation = [];
+    for (const track of tracks) {
+      total_distance += track.distance;
+      elevation.push(track.coord[2]);
+      distance.push(Math.round((total_distance / 1000) * 100) / 100);
+    }
+    chart.load({
+      columns: [["x"].concat(distance), ["高度"].concat(elevation)],
+      done: () => setChartPoint(0),
+    });
+  }
+
+  // 地図上のトラック線にマウスを合わせると、最も近いトラック点に
+  // 対応するチャート上の点を赤くする(stroll.jsのonPoint/handlePointerMoveと同じ考え方)。
+  // 再生アニメーション中はhandlePointerMove自体を外して、チャート上の点は
+  // 再生位置(setChartPoint)側だけが更新するようにする。
+  function setChartPoint(index) {
+    d3.selectAll("#chart .c3-circle").style("fill", (data, i) =>
+      i === index ? "red" : "transparent",
+    );
+  }
+
+  function handlePointerMove(evt) {
+    if (evt.dragging) return;
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f, {
+      hitTolerance: 5,
+    });
+    if (!feature || feature.getGeometry().getType() !== "LineString") return;
+
+    let nearestIndex = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < tracks.length; i++) {
+      const c = tracks[i].coord;
+      const diff =
+        Math.abs(c[0] - evt.coordinate[0]) + Math.abs(c[1] - evt.coordinate[1]);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nearestIndex = i;
+      }
+    }
+    setChartPoint(nearestIndex);
+  }
+
+  if (tracks.length > 0) {
+    map.on("pointermove", handlePointerMove);
+  }
+
+  // トラックログに沿ってさるのアイコンをアニメーション再生する
+  // (assets/svelte/stroll.jsのStrollMapの考え方の移植。ただしこのページは
+  // EPSG:4326のままなので、stroll.js側にあったEPSG:3857<->経緯度の変換は
+  // 不要)。距離/経過時間/速度の表示は、チャート分の高さを増やしたくない
+  // ため<style>の.stroll-hudで地図左下に重ねる(#map/#chartの高さは
+  // mkdocs_export.exのiframe_height計算と手動で合わせているため、
+  // 高さが変わる要素を増やしたくない)。
+  if (canAnimate) {
+    const SPEED = 120;
+    const OFFSET = 32;
+    // さるがwaypointに近づいたら地図を拡大する(stroll.jsのKmlMap.zoomInMap/
+    // NEAR_MARKER_ZOOMと同じ考え方)。倍率は固定値とし、離れたら再生開始時の
+    // ズーム(baseZoom、handleMoveEndで随時更新)に戻す。
+    const ZOOM_IN_DISTANCE = 100; // メートル
+    const START_ZOOM = 16; // さるクリック時にこのズームへ寄る(baseZoomの初期値にもなる)
+    const NEAR_MARKER_ZOOM = 18; // START_ZOOMとの差でマーカー接近時に寄った感を出す
+    const waypoints = features
+      .filter((f) => f.getGeometry() && f.getGeometry().getType() === "Point")
+      .map((f) => ({ name: f.get("name") || "", coord: f.getGeometry().getCoordinates() }))
+      .filter((w) => !w.name.endsWith(". Km"));
+    const zoomInMap = new Map();
+    for (const waypoint of waypoints) {
+      for (let i = 0; i < tracks.length; i++) {
+        if (ol.sphere.getDistance(tracks[i].coord, waypoint.coord) <= ZOOM_IN_DISTANCE) {
+          if (!zoomInMap.has(i)) zoomInMap.set(i, []);
+          zoomInMap.get(i).push(waypoint);
+        }
+      }
+    }
+    const hud = document.createElement("div");
+    hud.className = "stroll-hud";
+    document.getElementById("map").appendChild(hud);
+
+    const elmSaru = document.createElement("img");
+    elmSaru.src = "stroll/saru.png";
+    elmSaru.className = "stroll-marker";
+    const elmGoal = document.createElement("img");
+    elmGoal.src = "stroll/saru-goal.png";
+    elmGoal.className = "stroll-marker";
+
+    const overlay = new ol.Overlay({ element: elmSaru, positioning: "center-center" });
+    map.addOverlay(overlay);
+    overlay.setPosition(tracks[0].coord);
+
+    const formatTime = (seconds) => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return [h, m, s].map((v) => v.toString().padStart(2, "0")).join(":");
+    };
+    // 値と単位を別々に返す([値, 単位])。数値の桁数が変わっても単位の
+    // 表示位置がズレないよう、setHud側で数値部分だけを固定幅にするため。
+    const distanceText = (d) => [Math.round((d / 1000) * 100) / 100, "km"];
+    const elapsedText = (elapsed, speed) => [formatTime((elapsed * speed) / 1000), "hrs"];
+    // 区間の実速度(km/h)。distanceはメートル、rawMsは<when>由来の実時間の
+    // ミリ秒(SPEEDによる圧縮前の値)を渡す — 再生を何倍速にしても実際に
+    // 歩いた速さの表示は変わらないようにするため。
+    const speedText = (d, rawMs) => {
+      if (!rawMs) return [0, "km/h"];
+      return [Math.round((d / (rawMs / 1000)) * 3.6 * 10) / 10, "km/h"];
+    };
+    const statHtml = (icon, title, [value, unit]) =>
+      `<span class="stroll-stat" title="${title}"><span class="stroll-icon">${icon}</span>` +
+      `<span class="stroll-value"><span class="stroll-number">${value}</span><span class="stroll-unit">${unit}</span></span></span>`;
+    const setHud = (d, t, s) => {
+      hud.innerHTML =
+        statHtml("📏", "Distance", d) + statHtml("⏱️", "Elapsed", t) + statHtml("⚡", "Speed", s);
+    };
+
+    let total_distance = 0;
+    let total_time = 0;
+    for (const track of tracks) {
+      total_distance += track.distance;
+      total_time += track.timestamp;
+    }
+    setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+
+    const isOutside = (coord) => {
+      const mapSize = map.getSize();
+      const innerSize = [mapSize[0] - OFFSET * 2, mapSize[1] - OFFSET * 2];
+      const extent = map.getView().calculateExtent(innerSize);
+      return (
+        coord[0] >= extent[2] ||
+        coord[0] <= extent[0] ||
+        coord[1] >= extent[3] ||
+        coord[1] <= extent[1]
+      );
+    };
+
+    // TimeKeeper: requestAnimationFrameで経過時間を積算するだけの
+    // 汎用タイマー(stroll.jsのTimeKeeperと同じ考え方)。callbackの戻り値の
+    // 分だけ次フレームの経過時間をスキップできる(遠方へジャンプする間の
+    // 一時停止に使う。下のtk.start参照)。
+    function createTimeKeeper() {
+      const STOPPED = 0;
+      const PAUSED = 1;
+      const RUNNING = 2;
+      let callback;
+      let ref;
+      let prevTimestamp;
+      let elapsed = 0;
+      let state = STOPPED;
+      let skipTime = 0;
+
+      function loop(timestamp) {
+        if (prevTimestamp === undefined) prevTimestamp = timestamp;
+        timestamp += skipTime;
+        elapsed += timestamp - prevTimestamp;
+        skipTime += callback(Math.trunc(elapsed));
+        prevTimestamp = timestamp;
+        if (state === RUNNING) ref = requestAnimationFrame(loop);
+      }
+
+      return {
+        start(cb) {
+          if (state !== STOPPED) return;
+          state = RUNNING;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          elapsed = 0;
+          callback = cb;
+          ref = requestAnimationFrame(loop);
+        },
+        resume() {
+          if (state !== PAUSED) return;
+          state = RUNNING;
+          ref = requestAnimationFrame(loop);
+        },
+        pause() {
+          if (state !== RUNNING) return;
+          state = PAUSED;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        stop() {
+          state = STOPPED;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        getElapsed: () => elapsed,
+      };
+    }
+
+    const tk = createTimeKeeper();
+    let isRunning = false;
+    let legFrom = tracks[0].coord;
+    let legTo = tracks[0].coord;
+    let legDuration = 0;
+    let legStartElapsed = 0;
+    let suppressMoveHandlers = false;
+    let baseZoom = map.getView().getZoom();
+    let isNearMarker = false;
+
+    const legFraction = () => {
+      if (legDuration <= 0) return 1;
+      return Math.min(1, Math.max(0, (tk.getElapsed() - legStartElapsed) / legDuration));
+    };
+    const currentCoord = () => {
+      const fraction = legFraction();
+      return [
+        legFrom[0] + (legTo[0] - legFrom[0]) * fraction,
+        legFrom[1] + (legTo[1] - legFrom[1]) * fraction,
+      ];
+    };
+    const handleMoveStart = () => {
+      if (suppressMoveHandlers) return;
+      elmSaru.parentNode.style.transition = "";
+      overlay.setPosition(currentCoord());
+      tk.pause();
+    };
+    const handleMoveEnd = () => {
+      if (suppressMoveHandlers) return;
+      if (isRunning) baseZoom = map.getView().getZoom();
+      const remaining = legDuration * (1 - legFraction());
+      elmSaru.parentNode.style.transition = remaining > 0 ? `all ${remaining}ms linear` : "";
+      overlay.setPosition(legTo);
+      tk.resume();
+    };
+
+    elmSaru.onclick = () => {
+      if (isRunning) return;
+      isRunning = true;
+      map.un("pointermove", handlePointerMove);
+      // クリックした瞬間に開始地点へ寄る(stroll.jsのelmKuma.onclickと同じ
+      // 考え方)。この時点のズームをbaseZoomにする(以後ユーザーが手動で
+      // ズームを変えればhandleMoveEndがそれを新しいbaseZoomに更新する)。
+      map.getView().setCenter(tracks[0].coord);
+      map.getView().setZoom(START_ZOOM);
+      baseZoom = START_ZOOM;
+      // ゴール到達後にリプレイした時、前回終了時点の値(ゴール地点の座標)が
+      // 残らないよう区間状態を開始地点にリセットする。
+      legFrom = tracks[0].coord;
+      legTo = tracks[0].coord;
+      legDuration = 0;
+      legStartElapsed = 0;
+      isNearMarker = false;
+      let index = 0;
+      let distance = 0;
+      let timestamp = 0;
+      let currentSpeedText = ["-", ""];
+
+      tk.start((elapsed) => {
+        // 距離/速度はadvanceToTrack内(区間が進んだ時)だけ更新し、経過時間
+        // だけ毎フレーム更新する(stroll.jsのelmKuma.onclickと同じ考え方。
+        // distance/speedを毎フレーム上書きすると区間の途中で表示が
+        // リセットされてしまう)。
+        setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+        if (timestamp <= elapsed) {
+          if (index < tracks.length) {
+            setChartPoint(index);
+            const track = tracks[index];
+            // track.timestampは<when>由来の実時間(ms)。再生(timestamp
+            // アキュムレータ/CSS transition)はtk.elapsed(実時間)と直接
+            // 比較するため、SPEED倍だけ圧縮したlegMsを使う。速度表示だけは
+            // 圧縮前のtrack.timestampをそのまま渡して実際の歩行速度を出す
+            // (ここをtrack.timestampのままにするとSPEED倍遅く進む上、
+            // speedTextの分母も引きずられて速度が0近くに丸まっていた)。
+            const advanceToTrack = () => {
+              const legMs = track.timestamp / SPEED;
+              distance += track.distance;
+              timestamp += legMs;
+              legFrom = legTo;
+              legTo = track.coord;
+              legDuration = legMs;
+              legStartElapsed = elapsed;
+              elmSaru.parentNode.style.transition = `all ${legMs}ms linear`;
+              overlay.setPosition(track.coord);
+              currentSpeedText = speedText(track.distance, track.timestamp);
+              setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+              index++;
+            };
+            // waypointに近づいたら拡大し、離れたらbaseZoomに戻す
+            // (stroll.jsのzoomInMap/NEAR_MARKER_ZOOMと同じ考え方)。今の
+            // indexの100m圏内にwaypointがあるかどうかだけで判定する
+            // (訪問済みかどうかは見ない。一度圏内→圏外→圏内と出入りしてから
+            // 最接近するルートで、既訪問扱いにして最接近時のズームを
+            // 取りこぼすことがあったため)。
+            const zoomMarkers = zoomInMap.get(index) || [];
+            const shouldZoomIn = zoomMarkers.length > 0;
+            const zoomChanged = shouldZoomIn !== isNearMarker;
+            if (isOutside(track.coord) || zoomChanged) {
+              isNearMarker = shouldZoomIn;
+              suppressMoveHandlers = true;
+              tk.pause();
+              elmSaru.parentNode.style.transition = "";
+              map.getView().setCenter(track.coord);
+              if (zoomChanged) {
+                map.getView().setZoom(shouldZoomIn ? NEAR_MARKER_ZOOM : baseZoom);
+              }
+              const onMoveEnd = () => {
+                map.un("moveend", onMoveEnd);
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    suppressMoveHandlers = false;
+                    tk.resume();
+                    advanceToTrack();
+                  });
+                });
+              };
+              map.on("moveend", onMoveEnd);
+            } else {
+              advanceToTrack();
+            }
+          } else {
+            elmSaru.parentNode.style.transition = "";
+            overlay.setElement(elmGoal);
+            elmGoal.onclick = () => {
+              setChartPoint(0);
+              overlay.setElement(elmSaru);
+              overlay.setPosition(tracks[0].coord);
+              setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+              map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+            };
+            map.un("movestart", handleMoveStart);
+            map.un("moveend", handleMoveEnd);
+            map.on("pointermove", handlePointerMove);
+            tk.stop();
+            isRunning = false;
+          }
+        }
+        // 遠方へのジャンプでカメラをパンしている間はtk.pause()するため、
+        // 6時間以上先にジャンプする区間だけはその間の経過時間をスキップする
+        // (パン待ちのために実時間で6時間相当も止まらせないため。
+        // stroll.jsのelmKuma.onclickと同じ考え方)。
+        const hour = ((timestamp - elapsed) * SPEED) / 1000 / 3600;
+        return hour >= 6 ? timestamp - elapsed : 0;
+      });
+      map.on("movestart", handleMoveStart);
+      map.on("moveend", handleMoveEnd);
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") tk.resume();
+      if (document.visibilityState === "hidden") tk.pause();
+    });
+  }
+
+  const popup = document.getElementById("popup");
+  const popupOverlay = new ol.Overlay({ element: popup, positioning: "bottom-center" });
+  map.addOverlay(popupOverlay);
+
+  map.on("click", (evt) => {
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f);
+    if (!feature || feature.getGeometry().getType() !== "Point") {
+      popup.style.display = "none";
+      return;
+    }
+
+    const name = feature.get("name") || "";
+    const photos = photosByWaypoint[name] || [];
+    if (!photos[0]) {
+      popup.style.display = "none";
+      return;
+    }
+    popup.innerHTML = '<img src="' + encodeURI(photos[0].image_path) + '">';
+    popup.style.display = "block";
+    popupOverlay.setPosition(feature.getGeometry().getCoordinates());
+  });
+</script>
+</body>
+</html>

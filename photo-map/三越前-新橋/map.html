@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10/ol.css">
+<script src="https://cdn.jsdelivr.net/npm/ol@10/dist/ol.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけiframe全体(高さ)を広げて確保する
+     (mkdocs_export.md.eexのiframe heightと合わせている)。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  .popup {
+    position: absolute;
+    display: none;
+    background: #fff;
+    color: #222;
+    border: 1px solid #888;
+    border-radius: 4px;
+    padding: 8px;
+    max-width: 140px;
+    transform: translate(-50%, -100%);
+    font-family: sans-serif;
+    font-size: 13px;
+  }
+  .popup img { max-width: 120px; max-height: 120px; display: block; margin-bottom: 4px; border-radius: 4px; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<div id="popup" class="popup"></div>
+<script>
+  const kmlText = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:gx=\"http://www.google.com/kml/ext/2.2\" xmlns:atom=\"http://www.w3.org/2005/Atom\" xmlns:xal=\"urn:oasis:names:tc:ciq:xsdschema:xAL:2.0\">\n    <Document>\n        <open>true</open>\n        <Style id=\"trackStyle\">\n            <LineStyle>\n                <color>FFFF00FF</color>\n                <width>3.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_0\">\n            <LineStyle>\n                <color>FF00FFFF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_1\">\n            <LineStyle>\n                <color>FF008080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_2\">\n            <LineStyle>\n                <color>FF00FF00</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_3\">\n            <LineStyle>\n                <color>FF008000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_4\">\n            <LineStyle>\n                <color>FFFFFF00</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_5\">\n            <LineStyle>\n                <color>FF808000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_6\">\n            <LineStyle>\n                <color>FFFF0000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_7\">\n            <LineStyle>\n                <color>FF800000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_8\">\n            <LineStyle>\n                <color>FFFF00FF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_9\">\n            <LineStyle>\n                <color>FF800080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_10\">\n            <LineStyle>\n                <color>FF0000FF</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_11\">\n            <LineStyle>\n                <color>FF000080</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_12\">\n            <LineStyle>\n                <color>FF194C80</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Style id=\"speedColor_13\">\n            <LineStyle>\n                <color>FF000000</color>\n                <width>5.0</width>\n            </LineStyle>\n        </Style>\n        <Folder>\n            <Placemark><name>三越前-新橋</name>\n                <styleUrl>#trackStyle</styleUrl>\n                <gx:Track>\n                    <when>2022-09-10T02:54:03Z</when>\n                    <when>2022-09-10T02:54:18Z</when>\n                    <when>2022-09-10T02:54:23Z</when>\n                    <when>2022-09-10T02:54:28Z</when>\n                    <when>2022-09-10T02:54:33Z</when>\n                    <when>2022-09-10T02:54:38Z</when>\n                    <when>2022-09-10T02:54:48Z</when>\n                    <when>2022-09-10T02:54:58Z</when>\n                    <when>2022-09-10T02:55:08Z</when>\n                    <when>2022-09-10T02:55:13Z</when>\n                    <when>2022-09-10T02:55:19Z</when>\n                    <when>2022-09-10T02:56:54Z</when>\n                    <when>2022-09-10T02:57:14Z</when>\n                    <when>2022-09-10T02:58:04Z</when>\n                    <when>2022-09-10T02:58:09Z</when>\n                    <when>2022-09-10T02:58:54Z</when>\n                    <when>2022-09-10T03:04:34Z</when>\n                    <when>2022-09-10T03:04:44Z</when>\n                    <when>2022-09-10T03:04:49Z</when>\n                    <when>2022-09-10T03:04:59Z</when>\n                    <when>2022-09-10T03:05:34Z</when>\n                    <when>2022-09-10T03:05:54Z</when>\n                    <when>2022-09-10T03:06:04Z</when>\n                    <when>2022-09-10T03:06:09Z</when>\n                    <when>2022-09-10T03:06:14Z</when>\n                    <when>2022-09-10T03:06:29Z</when>\n                    <when>2022-09-10T03:06:39Z</when>\n                    <when>2022-09-10T03:06:49Z</when>\n                    <when>2022-09-10T03:06:54Z</when>\n                    <when>2022-09-10T03:07:09Z</when>\n                    <when>2022-09-10T03:07:14Z</when>\n                    <when>2022-09-10T03:07:24Z</when>\n                    <when>2022-09-10T03:07:34Z</when>\n                    <when>2022-09-10T03:07:44Z</when>\n                    <when>2022-09-10T03:07:49Z</when>\n                    <when>2022-09-10T03:07:54Z</when>\n                    <when>2022-09-10T03:07:59Z</when>\n                    <when>2022-09-10T03:08:04Z</when>\n                    <when>2022-09-10T03:08:14Z</when>\n                    <when>2022-09-10T03:08:19Z</when>\n                    <when>2022-09-10T03:08:24Z</when>\n                    <when>2022-09-10T03:08:29Z</when>\n                    <when>2022-09-10T03:08:34Z</when>\n                    <when>2022-09-10T03:08:44Z</when>\n                    <when>2022-09-10T03:08:49Z</when>\n                    <when>2022-09-10T03:08:54Z</when>\n                    <when>2022-09-10T03:09:04Z</when>\n                    <when>2022-09-10T03:09:14Z</when>\n                    <when>2022-09-10T03:09:24Z</when>\n                    <when>2022-09-10T03:09:29Z</when>\n                    <when>2022-09-10T03:09:34Z</when>\n                    <when>2022-09-10T03:09:44Z</when>\n                    <when>2022-09-10T03:09:49Z</when>\n                    <when>2022-09-10T03:10:39Z</when>\n                    <when>2022-09-10T03:10:44Z</when>\n                    <when>2022-09-10T03:10:49Z</when>\n                    <when>2022-09-10T03:10:59Z</when>\n                    <when>2022-09-10T03:11:09Z</when>\n                    <when>2022-09-10T03:16:39Z</when>\n                    <when>2022-09-10T03:17:04Z</when>\n                    <when>2022-09-10T03:17:34Z</when>\n                    <when>2022-09-10T03:17:44Z</when>\n                    <when>2022-09-10T03:17:49Z</when>\n                    <when>2022-09-10T03:17:54Z</when>\n                    <when>2022-09-10T03:18:04Z</when>\n                    <when>2022-09-10T03:36:04Z</when>\n                    <when>2022-09-10T03:36:19Z</when>\n                    <when>2022-09-10T03:36:29Z</when>\n                    <when>2022-09-10T03:37:09Z</when>\n                    <when>2022-09-10T03:37:19Z</when>\n                    <when>2022-09-10T03:37:24Z</when>\n                    <when>2022-09-10T03:37:30Z</when>\n                    <when>2022-09-10T03:37:35Z</when>\n                    <when>2022-09-10T03:38:35Z</when>\n                    <when>2022-09-10T03:38:50Z</when>\n                    <when>2022-09-10T03:38:55Z</when>\n                    <when>2022-09-10T03:39:00Z</when>\n                    <when>2022-09-10T03:39:15Z</when>\n                    <when>2022-09-10T03:39:20Z</when>\n                    <when>2022-09-10T03:42:56Z</when>\n                    <when>2022-09-10T03:43:01Z</when>\n                    <when>2022-09-10T03:43:06Z</when>\n                    <when>2022-09-10T03:43:11Z</when>\n                    <when>2022-09-10T03:43:16Z</when>\n                    <when>2022-09-10T03:43:26Z</when>\n                    <when>2022-09-10T03:43:46Z</when>\n                    <when>2022-09-10T03:45:21Z</when>\n                    <when>2022-09-10T03:48:21Z</when>\n                    <when>2022-09-10T03:52:26Z</when>\n                    <when>2022-09-10T03:52:36Z</when>\n                    <when>2022-09-10T03:52:46Z</when>\n                    <when>2022-09-10T03:52:56Z</when>\n                    <when>2022-09-10T03:53:06Z</when>\n                    <when>2022-09-10T03:53:11Z</when>\n                    <when>2022-09-10T03:59:02Z</when>\n                    <when>2022-09-10T03:59:07Z</when>\n                    <when>2022-09-10T03:59:12Z</when>\n                    <when>2022-09-10T03:59:17Z</when>\n                    <when>2022-09-10T03:59:22Z</when>\n                    <when>2022-09-10T03:59:32Z</when>\n                    <when>2022-09-10T03:59:37Z</when>\n                    <when>2022-09-10T03:59:47Z</when>\n                    <when>2022-09-10T03:59:52Z</when>\n                    <when>2022-09-10T04:00:02Z</when>\n                    <when>2022-09-10T04:00:12Z</when>\n                    <when>2022-09-10T04:00:17Z</when>\n                    <when>2022-09-10T04:07:42Z</when>\n                    <when>2022-09-10T04:07:52Z</when>\n                    <when>2022-09-10T04:07:57Z</when>\n                    <when>2022-09-10T04:11:08Z</when>\n                    <when>2022-09-10T04:12:08Z</when>\n                    <when>2022-09-10T04:12:13Z</when>\n                    <when>2022-09-10T04:12:18Z</when>\n                    <when>2022-09-10T04:12:28Z</when>\n                    <when>2022-09-10T04:12:33Z</when>\n                    <when>2022-09-10T04:12:48Z</when>\n                    <when>2022-09-10T04:13:03Z</when>\n                    <when>2022-09-10T04:13:08Z</when>\n                    <when>2022-09-10T04:13:23Z</when>\n                    <when>2022-09-10T04:13:58Z</when>\n                    <when>2022-09-10T04:21:37Z</when>\n                    <when>2022-09-10T04:22:02Z</when>\n                    <when>2022-09-10T04:22:12Z</when>\n                    <when>2022-09-10T04:22:22Z</when>\n                    <when>2022-09-10T04:22:27Z</when>\n                    <when>2022-09-10T04:22:32Z</when>\n                    <when>2022-09-10T04:22:47Z</when>\n                    <when>2022-09-10T04:23:02Z</when>\n                    <when>2022-09-10T04:23:12Z</when>\n                    <when>2022-09-10T04:23:22Z</when>\n                    <when>2022-09-10T04:23:27Z</when>\n                    <when>2022-09-10T04:23:42Z</when>\n                    <when>2022-09-10T04:23:47Z</when>\n                    <when>2022-09-10T04:24:02Z</when>\n                    <when>2022-09-10T04:36:04Z</when>\n                    <when>2022-09-10T04:36:09Z</when>\n                    <when>2022-09-10T04:36:24Z</when>\n                    <when>2022-09-10T04:36:29Z</when>\n                    <when>2022-09-10T04:36:34Z</when>\n                    <when>2022-09-10T04:36:44Z</when>\n                    <when>2022-09-10T04:36:59Z</when>\n                    <when>2022-09-10T04:37:09Z</when>\n                    <when>2022-09-10T04:38:34Z</when>\n                    <when>2022-09-10T04:38:39Z</when>\n                    <when>2022-09-10T04:38:44Z</when>\n                    <when>2022-09-10T04:38:49Z</when>\n                    <when>2022-09-10T04:39:24Z</when>\n                    <when>2022-09-10T04:39:39Z</when>\n                    <when>2022-09-10T04:40:09Z</when>\n                    <when>2022-09-10T04:40:19Z</when>\n                    <when>2022-09-10T04:41:19Z</when>\n                    <when>2022-09-10T04:41:24Z</when>\n                    <when>2022-09-10T04:41:34Z</when>\n                    <when>2022-09-10T04:41:44Z</when>\n                    <when>2022-09-10T04:41:54Z</when>\n                    <when>2022-09-10T04:41:59Z</when>\n                    <when>2022-09-10T04:42:04Z</when>\n                    <when>2022-09-10T04:42:14Z</when>\n                    <when>2022-09-10T04:43:19Z</when>\n                    <when>2022-09-10T04:43:34Z</when>\n                    <when>2022-09-10T04:43:44Z</when>\n                    <when>2022-09-10T04:43:54Z</when>\n                    <when>2022-09-10T04:44:09Z</when>\n                    <when>2022-09-10T04:44:24Z</when>\n                    <when>2022-09-10T04:44:34Z</when>\n                    <when>2022-09-10T04:44:44Z</when>\n                    <when>2022-09-10T04:44:49Z</when>\n                    <when>2022-09-10T04:44:54Z</when>\n                    <when>2022-09-10T04:45:04Z</when>\n                    <when>2022-09-10T04:45:24Z</when>\n                    <when>2022-09-10T04:45:34Z</when>\n                    <when>2022-09-10T04:45:39Z</when>\n                    <when>2022-09-10T04:45:44Z</when>\n                    <when>2022-09-10T04:45:49Z</when>\n                    <when>2022-09-10T05:03:49Z</when>\n                    <when>2022-09-10T05:03:59Z</when>\n                    <when>2022-09-10T05:04:04Z</when>\n                    <when>2022-09-10T05:04:14Z</when>\n                    <when>2022-09-10T05:04:39Z</when>\n                    <when>2022-09-10T05:07:09Z</when>\n                    <when>2022-09-10T05:07:59Z</when>\n                    <when>2022-09-10T05:08:19Z</when>\n                    <when>2022-09-10T05:08:29Z</when>\n                    <when>2022-09-10T05:08:34Z</when>\n                    <when>2022-09-10T05:08:39Z</when>\n                    <when>2022-09-10T05:08:44Z</when>\n                    <when>2022-09-10T05:08:49Z</when>\n                    <when>2022-09-10T05:08:59Z</when>\n                    <when>2022-09-10T05:09:09Z</when>\n                    <when>2022-09-10T05:09:19Z</when>\n                    <when>2022-09-10T05:09:24Z</when>\n                    <when>2022-09-10T05:09:39Z</when>\n                    <when>2022-09-10T05:09:44Z</when>\n                    <when>2022-09-10T05:09:54Z</when>\n                    <when>2022-09-10T05:10:04Z</when>\n                    <when>2022-09-10T05:10:14Z</when>\n                    <when>2022-09-10T05:10:24Z</when>\n                    <when>2022-09-10T05:10:39Z</when>\n                    <when>2022-09-10T05:10:49Z</when>\n                    <when>2022-09-10T05:23:59Z</when>\n                    <when>2022-09-10T05:24:04Z</when>\n                    <when>2022-09-10T05:24:09Z</when>\n                    <when>2022-09-10T05:24:14Z</when>\n                    <when>2022-09-10T05:24:29Z</when>\n                    <when>2022-09-10T05:24:49Z</when>\n                    <when>2022-09-10T05:24:54Z</when>\n                    <when>2022-09-10T05:24:59Z</when>\n                    <when>2022-09-10T05:25:04Z</when>\n                    <when>2022-09-10T05:25:19Z</when>\n                    <when>2022-09-10T05:37:06Z</when>\n                    <when>2022-09-10T05:37:21Z</when>\n                    <when>2022-09-10T05:37:26Z</when>\n                    <when>2022-09-10T05:37:41Z</when>\n                    <when>2022-09-10T05:37:46Z</when>\n                    <when>2022-09-10T05:37:51Z</when>\n                    <when>2022-09-10T05:37:56Z</when>\n                    <when>2022-09-10T05:38:01Z</when>\n                    <when>2022-09-10T05:38:06Z</when>\n                    <when>2022-09-10T05:38:16Z</when>\n                    <when>2022-09-10T05:38:21Z</when>\n                    <when>2022-09-10T05:38:26Z</when>\n                    <when>2022-09-10T05:38:31Z</when>\n                    <when>2022-09-10T05:38:46Z</when>\n                    <when>2022-09-10T05:38:51Z</when>\n                    <when>2022-09-10T05:39:01Z</when>\n                    <when>2022-09-10T05:39:11Z</when>\n                    <when>2022-09-10T05:39:16Z</when>\n                    <when>2022-09-10T05:39:21Z</when>\n                    <when>2022-09-10T05:39:31Z</when>\n                    <when>2022-09-10T05:39:41Z</when>\n                    <when>2022-09-10T05:39:51Z</when>\n                    <when>2022-09-10T05:40:01Z</when>\n                    <when>2022-09-10T05:40:06Z</when>\n                    <when>2022-09-10T05:40:16Z</when>\n                    <when>2022-09-10T05:40:21Z</when>\n                    <when>2022-09-10T05:40:31Z</when>\n                    <when>2022-09-10T05:40:36Z</when>\n                    <when>2022-09-10T05:40:41Z</when>\n                    <when>2022-09-10T05:40:56Z</when>\n                    <when>2022-09-10T05:41:16Z</when>\n                    <when>2022-09-10T05:41:21Z</when>\n                    <when>2022-09-10T05:41:26Z</when>\n                    <when>2022-09-10T05:41:31Z</when>\n                    <when>2022-09-10T05:41:41Z</when>\n                    <when>2022-09-10T05:41:46Z</when>\n                    <when>2022-09-10T05:41:56Z</when>\n                    <when>2022-09-10T05:42:01Z</when>\n                    <when>2022-09-10T05:42:06Z</when>\n                    <when>2022-09-10T05:42:11Z</when>\n                    <when>2022-09-10T05:42:21Z</when>\n                    <when>2022-09-10T05:42:26Z</when>\n                    <when>2022-09-10T05:42:31Z</when>\n                    <when>2022-09-10T05:42:41Z</when>\n                    <when>2022-09-10T05:42:46Z</when>\n                    <when>2022-09-10T05:42:51Z</when>\n                    <when>2022-09-10T05:43:01Z</when>\n                    <when>2022-09-10T05:43:06Z</when>\n                    <when>2022-09-10T05:43:16Z</when>\n                    <when>2022-09-10T05:45:36Z</when>\n                    <when>2022-09-10T05:45:46Z</when>\n                    <when>2022-09-10T05:46:11Z</when>\n                    <when>2022-09-10T05:46:16Z</when>\n                    <when>2022-09-10T05:46:31Z</when>\n                    <when>2022-09-10T05:46:46Z</when>\n                    <when>2022-09-10T05:46:56Z</when>\n                    <when>2022-09-10T05:47:01Z</when>\n                    <when>2022-09-10T05:47:06Z</when>\n                    <when>2022-09-10T05:47:16Z</when>\n                    <when>2022-09-10T05:47:21Z</when>\n                    <when>2022-09-10T05:47:26Z</when>\n                    <when>2022-09-10T05:47:36Z</when>\n                    <when>2022-09-10T05:47:41Z</when>\n                    <when>2022-09-10T05:47:51Z</when>\n                    <when>2022-09-10T05:47:56Z</when>\n                    <when>2022-09-10T05:48:06Z</when>\n                    <when>2022-09-10T05:48:11Z</when>\n                    <when>2022-09-10T05:48:16Z</when>\n                    <when>2022-09-10T05:48:36Z</when>\n                    <when>2022-09-10T05:49:21Z</when>\n                    <when>2022-09-10T05:50:06Z</when>\n                    <when>2022-09-10T05:50:21Z</when>\n                    <when>2022-09-10T05:50:31Z</when>\n                    <when>2022-09-10T05:50:41Z</when>\n                    <when>2022-09-10T05:50:56Z</when>\n                    <when>2022-09-10T05:51:01Z</when>\n                    <when>2022-09-10T05:51:06Z</when>\n                    <when>2022-09-10T05:51:16Z</when>\n                    <when>2022-09-10T05:51:31Z</when>\n                    <when>2022-09-10T05:51:36Z</when>\n                    <when>2022-09-10T05:52:11Z</when>\n                    <when>2022-09-10T05:52:16Z</when>\n                    <when>2022-09-10T05:53:06Z</when>\n                    <when>2022-09-10T05:53:21Z</when>\n                    <when>2022-09-10T05:53:31Z</when>\n                    <when>2022-09-10T05:53:36Z</when>\n                    <when>2022-09-10T05:53:41Z</when>\n                    <when>2022-09-10T05:53:46Z</when>\n                    <when>2022-09-10T05:53:51Z</when>\n                    <when>2022-09-10T05:53:56Z</when>\n                    <when>2022-09-10T05:54:11Z</when>\n                    <when>2022-09-10T05:55:16Z</when>\n                    <when>2022-09-10T05:55:21Z</when>\n                    <when>2022-09-10T05:55:36Z</when>\n                    <when>2022-09-10T05:56:01Z</when>\n                    <when>2022-09-10T05:56:06Z</when>\n                    <when>2022-09-10T05:56:11Z</when>\n                    <when>2022-09-10T05:56:16Z</when>\n                    <when>2022-09-10T05:56:26Z</when>\n                    <when>2022-09-10T05:56:36Z</when>\n                    <when>2022-09-10T05:56:41Z</when>\n                    <when>2022-09-10T05:56:56Z</when>\n                    <when>2022-09-10T05:57:06Z</when>\n                    <when>2022-09-10T05:57:13Z</when>\n                    <when>2022-09-10T05:57:32Z</when>\n                    <when>2022-09-10T05:57:42Z</when>\n                    <when>2022-09-10T05:57:53Z</when>\n                    <when>2022-09-10T05:58:01Z</when>\n                    <when>2022-09-10T06:08:12Z</when>\n                    <when>2022-09-10T06:08:17Z</when>\n                    <when>2022-09-10T06:08:22Z</when>\n                    <when>2022-09-10T06:08:32Z</when>\n                    <when>2022-09-10T06:16:15Z</when>\n                    <when>2022-09-10T06:16:20Z</when>\n                    <when>2022-09-10T06:16:40Z</when>\n                    <when>2022-09-10T06:16:45Z</when>\n                    <when>2022-09-10T06:17:10Z</when>\n                    <when>2022-09-10T06:17:25Z</when>\n                    <when>2022-09-10T06:17:30Z</when>\n                    <when>2022-09-10T06:17:35Z</when>\n                    <when>2022-09-10T06:17:40Z</when>\n                    <when>2022-09-10T06:17:50Z</when>\n                    <when>2022-09-10T06:18:00Z</when>\n                    <when>2022-09-10T06:18:10Z</when>\n                    <when>2022-09-10T06:18:20Z</when>\n                    <when>2022-09-10T06:18:25Z</when>\n                    <when>2022-09-10T06:26:14Z</when>\n                    <when>2022-09-10T06:34:15Z</when>\n                    <when>2022-09-10T06:34:26Z</when>\n                    <when>2022-09-10T06:34:31Z</when>\n                    <when>2022-09-10T06:34:36Z</when>\n                    <when>2022-09-10T06:34:41Z</when>\n                    <when>2022-09-10T06:34:46Z</when>\n                    <when>2022-09-10T06:34:51Z</when>\n                    <when>2022-09-10T06:34:56Z</when>\n                    <when>2022-09-10T06:35:06Z</when>\n                    <when>2022-09-10T06:35:16Z</when>\n                    <when>2022-09-10T06:35:32Z</when>\n                    <when>2022-09-10T06:35:38Z</when>\n                    <when>2022-09-10T06:35:45Z</when>\n                    <when>2022-09-10T06:35:55Z</when>\n                    <when>2022-09-10T06:36:01Z</when>\n                    <when>2022-09-10T06:36:06Z</when>\n                    <when>2022-09-10T06:36:11Z</when>\n                    <when>2022-09-10T06:36:16Z</when>\n                    <when>2022-09-10T06:36:21Z</when>\n                    <when>2022-09-10T06:36:26Z</when>\n                    <when>2022-09-10T06:36:31Z</when>\n                    <when>2022-09-10T06:36:50Z</when>\n                    <when>2022-09-10T06:37:02Z</when>\n                    <when>2022-09-10T06:49:47Z</when>\n                    <when>2022-09-10T06:49:57Z</when>\n                    <when>2022-09-10T06:50:02Z</when>\n                    <when>2022-09-10T06:50:07Z</when>\n                    <when>2022-09-10T06:50:12Z</when>\n                    <when>2022-09-10T06:50:27Z</when>\n                    <when>2022-09-10T06:50:32Z</when>\n                    <when>2022-09-10T06:50:37Z</when>\n                    <when>2022-09-10T06:50:42Z</when>\n                    <when>2022-09-10T06:50:52Z</when>\n                    <when>2022-09-10T06:50:57Z</when>\n                    <when>2022-09-10T06:51:02Z</when>\n                    <when>2022-09-10T06:51:07Z</when>\n                    <when>2022-09-10T06:51:12Z</when>\n                    <when>2022-09-10T06:51:22Z</when>\n                    <when>2022-09-10T06:51:27Z</when>\n                    <when>2022-09-10T06:51:32Z</when>\n                    <when>2022-09-10T06:51:37Z</when>\n                    <when>2022-09-10T06:51:42Z</when>\n                    <when>2022-09-10T06:51:47Z</when>\n                    <when>2022-09-10T06:51:57Z</when>\n                    <when>2022-09-10T06:52:07Z</when>\n                    <when>2022-09-10T06:52:17Z</when>\n                    <when>2022-09-10T06:52:22Z</when>\n                    <when>2022-09-10T06:52:27Z</when>\n                    <when>2022-09-10T06:52:32Z</when>\n                    <when>2022-09-10T06:52:37Z</when>\n                    <when>2022-09-10T06:52:42Z</when>\n                    <when>2022-09-10T06:52:47Z</when>\n                    <when>2022-09-10T06:54:05Z</when>\n                    <when>2022-09-10T06:54:11Z</when>\n                    <when>2022-09-10T06:54:16Z</when>\n                    <when>2022-09-10T06:56:50Z</when>\n                    <when>2022-09-10T06:56:55Z</when>\n                    <when>2022-09-10T06:57:05Z</when>\n                    <when>2022-09-10T06:57:10Z</when>\n                    <when>2022-09-10T06:57:20Z</when>\n                    <when>2022-09-10T07:00:35Z</when>\n                    <when>2022-09-10T07:00:40Z</when>\n                    <when>2022-09-10T07:00:45Z</when>\n                    <when>2022-09-10T07:00:55Z</when>\n                    <when>2022-09-10T07:01:00Z</when>\n                    <when>2022-09-10T07:01:10Z</when>\n                    <when>2022-09-10T07:01:15Z</when>\n                    <when>2022-09-10T07:01:25Z</when>\n                    <when>2022-09-10T07:01:30Z</when>\n                    <when>2022-09-10T07:01:35Z</when>\n                    <when>2022-09-10T07:01:40Z</when>\n                    <when>2022-09-10T07:01:50Z</when>\n                    <when>2022-09-10T07:02:15Z</when>\n                    <when>2022-09-10T07:02:30Z</when>\n                    <when>2022-09-10T07:02:40Z</when>\n                    <when>2022-09-10T07:02:56Z</when>\n                    <when>2022-09-10T07:03:03Z</when>\n                    <when>2022-09-10T07:08:27Z</when>\n                    <when>2022-09-10T07:08:32Z</when>\n                    <when>2022-09-10T07:08:37Z</when>\n                    <when>2022-09-10T07:08:47Z</when>\n                    <when>2022-09-10T07:08:52Z</when>\n                    <when>2022-09-10T07:08:57Z</when>\n                    <when>2022-09-10T07:09:02Z</when>\n                    <when>2022-09-10T07:09:23Z</when>\n                    <when>2022-09-10T07:09:28Z</when>\n                    <when>2022-09-10T07:09:33Z</when>\n                    <when>2022-09-10T07:10:03Z</when>\n                    <when>2022-09-10T07:10:23Z</when>\n                    <when>2022-09-10T07:10:28Z</when>\n                    <when>2022-09-10T07:10:33Z</when>\n                    <when>2022-09-10T07:10:38Z</when>\n                    <when>2022-09-10T07:10:43Z</when>\n                    <when>2022-09-10T07:10:53Z</when>\n                    <when>2022-09-10T07:10:58Z</when>\n                    <when>2022-09-10T07:11:03Z</when>\n                    <when>2022-09-10T07:11:08Z</when>\n                    <when>2022-09-10T07:11:13Z</when>\n                    <when>2022-09-10T07:11:18Z</when>\n                    <when>2022-09-10T07:11:23Z</when>\n                    <when>2022-09-10T07:11:28Z</when>\n                    <when>2022-09-10T07:11:33Z</when>\n                    <when>2022-09-10T07:11:38Z</when>\n                    <when>2022-09-10T07:11:43Z</when>\n                    <when>2022-09-10T07:11:48Z</when>\n                    <when>2022-09-10T07:12:03Z</when>\n                    <when>2022-09-10T07:12:08Z</when>\n                    <when>2022-09-10T07:12:13Z</when>\n                    <when>2022-09-10T07:12:23Z</when>\n                    <when>2022-09-10T07:12:33Z</when>\n                    <when>2022-09-10T07:12:43Z</when>\n                    <when>2022-09-10T07:12:48Z</when>\n                    <when>2022-09-10T07:12:58Z</when>\n                    <when>2022-09-10T07:13:03Z</when>\n                    <when>2022-09-10T07:13:08Z</when>\n                    <when>2022-09-10T07:13:13Z</when>\n                    <when>2022-09-10T07:13:28Z</when>\n                    <when>2022-09-10T07:13:33Z</when>\n                    <when>2022-09-10T07:13:48Z</when>\n                    <when>2022-09-10T07:14:13Z</when>\n                    <when>2022-09-10T07:14:28Z</when>\n                    <when>2022-09-10T07:14:38Z</when>\n                    <when>2022-09-10T07:14:48Z</when>\n                    <when>2022-09-10T07:14:53Z</when>\n                    <when>2022-09-10T07:14:58Z</when>\n                    <when>2022-09-10T07:15:03Z</when>\n                    <when>2022-09-10T07:15:08Z</when>\n                    <when>2022-09-10T07:15:18Z</when>\n                    <when>2022-09-10T07:15:23Z</when>\n                    <when>2022-09-10T07:15:28Z</when>\n                    <when>2022-09-10T07:15:33Z</when>\n                    <when>2022-09-10T07:15:43Z</when>\n                    <when>2022-09-10T07:15:48Z</when>\n                    <when>2022-09-10T07:15:58Z</when>\n                    <when>2022-09-10T07:16:03Z</when>\n                    <when>2022-09-10T07:16:08Z</when>\n                    <when>2022-09-10T07:16:18Z</when>\n                    <when>2022-09-10T07:16:23Z</when>\n                    <when>2022-09-10T07:16:28Z</when>\n                    <when>2022-09-10T07:45:40Z</when>\n                    <when>2022-09-10T07:45:45Z</when>\n                    <when>2022-09-10T07:46:00Z</when>\n                    <when>2022-09-10T07:46:05Z</when>\n                    <when>2022-09-10T07:46:10Z</when>\n                    <when>2022-09-10T07:47:15Z</when>\n                    <when>2022-09-10T07:47:20Z</when>\n                    <when>2022-09-10T07:47:30Z</when>\n                    <when>2022-09-10T07:47:35Z</when>\n                    <when>2022-09-10T07:47:40Z</when>\n                    <when>2022-09-10T07:47:50Z</when>\n                    <when>2022-09-10T07:47:55Z</when>\n                    <when>2022-09-10T07:48:15Z</when>\n                    <when>2022-09-10T07:48:20Z</when>\n                    <when>2022-09-10T07:48:35Z</when>\n                    <when>2022-09-10T07:48:40Z</when>\n                    <when>2022-09-10T07:48:45Z</when>\n                    <when>2022-09-10T07:48:55Z</when>\n                    <when>2022-09-10T07:49:00Z</when>\n                    <when>2022-09-10T07:49:05Z</when>\n                    <when>2022-09-10T07:49:10Z</when>\n                    <when>2022-09-10T07:49:25Z</when>\n                    <when>2022-09-10T07:49:30Z</when>\n                    <when>2022-09-10T07:49:35Z</when>\n                    <when>2022-09-10T07:49:45Z</when>\n                    <when>2022-09-10T07:49:50Z</when>\n                    <when>2022-09-10T07:49:55Z</when>\n                    <when>2022-09-10T07:50:10Z</when>\n                    <when>2022-09-10T07:50:25Z</when>\n                    <when>2022-09-10T07:50:30Z</when>\n                    <when>2022-09-10T08:05:36Z</when>\n                    <when>2022-09-10T08:05:41Z</when>\n                    <when>2022-09-10T08:05:46Z</when>\n                    <when>2022-09-10T08:05:51Z</when>\n                    <when>2022-09-10T08:06:06Z</when>\n                    <when>2022-09-10T08:06:16Z</when>\n                    <when>2022-09-10T08:06:26Z</when>\n                    <when>2022-09-10T08:06:41Z</when>\n                    <when>2022-09-10T08:06:46Z</when>\n                    <when>2022-09-10T08:06:51Z</when>\n                    <when>2022-09-10T08:06:56Z</when>\n                    <when>2022-09-10T08:07:06Z</when>\n                    <when>2022-09-10T08:07:16Z</when>\n                    <when>2022-09-10T08:07:21Z</when>\n                    <when>2022-09-10T08:07:31Z</when>\n                    <when>2022-09-10T08:08:26Z</when>\n                    <when>2022-09-10T08:08:36Z</when>\n                    <when>2022-09-10T08:08:51Z</when>\n                    <when>2022-09-10T08:08:56Z</when>\n                    <when>2022-09-10T08:09:21Z</when>\n                    <gx:coord>139.7740454 35.6859036 30.0</gx:coord>\n                    <gx:coord>139.7739932 35.685919 30.0</gx:coord>\n                    <gx:coord>139.7740075 35.6859743 30.0</gx:coord>\n                    <gx:coord>139.773999 35.6860351 30.0</gx:coord>\n                    <gx:coord>139.7739153 35.68609 30.0</gx:coord>\n                    <gx:coord>139.7739286 35.6861576 30.0</gx:coord>\n                    <gx:coord>139.7740634 35.6862146 29.0</gx:coord>\n                    <gx:coord>139.7742086 35.6860092 29.0</gx:coord>\n                    <gx:coord>139.7742238 35.6859369 29.0</gx:coord>\n                    <gx:coord>139.7742477 35.6858822 29.0</gx:coord>\n                    <gx:coord>139.7742753 35.6858333 29.0</gx:coord>\n                    <gx:coord>139.7742655 35.6859323 29.0</gx:coord>\n                    <gx:coord>139.7741907 35.6860476 29.0</gx:coord>\n                    <gx:coord>139.774115 35.68623 29.0</gx:coord>\n                    <gx:coord>139.774075 35.6861933 29.0</gx:coord>\n                    <gx:coord>139.7739618 35.6861354 30.0</gx:coord>\n                    <gx:coord>139.7738733 35.686285 30.0</gx:coord>\n                    <gx:coord>139.77381 35.6864 30.0</gx:coord>\n                    <gx:coord>139.7737565 35.686465 30.0</gx:coord>\n                    <gx:coord>139.7737063 35.6865457 29.0</gx:coord>\n                    <gx:coord>139.7736304 35.6866649 29.0</gx:coord>\n                    <gx:coord>139.7736328 35.6866761 29.0</gx:coord>\n                    <gx:coord>139.7735548 35.6867117 29.0</gx:coord>\n                    <gx:coord>139.773575 35.686725 29.0</gx:coord>\n                    <gx:coord>139.77358 35.6867417 29.0</gx:coord>\n                    <gx:coord>139.7734783 35.6868633 29.0</gx:coord>\n                    <gx:coord>139.77354 35.6869133 28.0</gx:coord>\n                    <gx:coord>139.7734867 35.687005 28.0</gx:coord>\n                    <gx:coord>139.7734917 35.6870333 28.0</gx:coord>\n                    <gx:coord>139.7734517 35.6870317 28.0</gx:coord>\n                    <gx:coord>139.773465 35.687035 28.0</gx:coord>\n                    <gx:coord>139.773465 35.68709 28.0</gx:coord>\n                    <gx:coord>139.773495 35.6871533 28.0</gx:coord>\n                    <gx:coord>139.7733783 35.6872867 28.0</gx:coord>\n                    <gx:coord>139.7733935 35.6873726 28.0</gx:coord>\n                    <gx:coord>139.7733777 35.6874517 27.0</gx:coord>\n                    <gx:coord>139.7734786 35.6874641 27.0</gx:coord>\n                    <gx:coord>139.7734899 35.6875717 27.0</gx:coord>\n                    <gx:coord>139.7734065 35.6876654 27.0</gx:coord>\n                    <gx:coord>139.7733583 35.6877017 28.0</gx:coord>\n                    <gx:coord>139.7733655 35.6877067 28.0</gx:coord>\n                    <gx:coord>139.7734239 35.6876859 27.0</gx:coord>\n                    <gx:coord>139.7734055 35.6876322 27.0</gx:coord>\n                    <gx:coord>139.7733334 35.6876041 28.0</gx:coord>\n                    <gx:coord>139.773215 35.68776 28.0</gx:coord>\n                    <gx:coord>139.7731467 35.6878 29.0</gx:coord>\n                    <gx:coord>139.7730717 35.687805 29.0</gx:coord>\n                    <gx:coord>139.7729873 35.687905 29.0</gx:coord>\n                    <gx:coord>139.772941 35.6879574 29.0</gx:coord>\n                    <gx:coord>139.7729471 35.6880434 29.0</gx:coord>\n                    <gx:coord>139.7729854 35.6882073 28.0</gx:coord>\n                    <gx:coord>139.7728998 35.6885159 27.0</gx:coord>\n                    <gx:coord>139.7728733 35.688595 26.0</gx:coord>\n                    <gx:coord>139.7728404 35.688652 26.0</gx:coord>\n                    <gx:coord>139.7727684 35.6887226 25.0</gx:coord>\n                    <gx:coord>139.7726717 35.6887317 25.0</gx:coord>\n                    <gx:coord>139.7726617 35.688765 24.0</gx:coord>\n                    <gx:coord>139.7727333 35.6887667 25.0</gx:coord>\n                    <gx:coord>139.7726717 35.688825 24.0</gx:coord>\n                    <gx:coord>139.7727593 35.6888089 24.0</gx:coord>\n                    <gx:coord>139.7727883 35.688775 25.0</gx:coord>\n                    <gx:coord>139.7728049 35.6887179 25.0</gx:coord>\n                    <gx:coord>139.7729138 35.6887454 26.0</gx:coord>\n                    <gx:coord>139.7729783 35.6888283 25.0</gx:coord>\n                    <gx:coord>139.772945 35.6886917 26.0</gx:coord>\n                    <gx:coord>139.7729533 35.6886633 26.0</gx:coord>\n                    <gx:coord>139.7728717 35.68864 26.0</gx:coord>\n                    <gx:coord>139.772825 35.6885817 26.0</gx:coord>\n                    <gx:coord>139.7728687 35.6885061 27.0</gx:coord>\n                    <gx:coord>139.7728756 35.6883704 28.0</gx:coord>\n                    <gx:coord>139.7728296 35.6883447 28.0</gx:coord>\n                    <gx:coord>139.7728033 35.68838 28.0</gx:coord>\n                    <gx:coord>139.772913 35.6883518 28.0</gx:coord>\n                    <gx:coord>139.7729027 35.6883024 28.0</gx:coord>\n                    <gx:coord>139.7729381 35.6882137 28.0</gx:coord>\n                    <gx:coord>139.7729781 35.6881354 28.0</gx:coord>\n                    <gx:coord>139.7730181 35.6880337 29.0</gx:coord>\n                    <gx:coord>139.7730753 35.687909 29.0</gx:coord>\n                    <gx:coord>139.7731046 35.6878311 29.0</gx:coord>\n                    <gx:coord>139.7732432 35.6877189 28.0</gx:coord>\n                    <gx:coord>139.7733464 35.6875 27.0</gx:coord>\n                    <gx:coord>139.7734883 35.6874414 27.0</gx:coord>\n                    <gx:coord>139.7735897 35.6874279 27.0</gx:coord>\n                    <gx:coord>139.7736183 35.687352 27.0</gx:coord>\n                    <gx:coord>139.7736622 35.6871852 27.0</gx:coord>\n                    <gx:coord>139.7737512 35.6870518 27.0</gx:coord>\n                    <gx:coord>139.7738544 35.6870623 27.0</gx:coord>\n                    <gx:coord>139.7740456 35.6871337 26.0</gx:coord>\n                    <gx:coord>139.7742363 35.6871733 24.6</gx:coord>\n                    <gx:coord>139.7743309 35.6871967 25.0</gx:coord>\n                    <gx:coord>139.7744126 35.6872192 24.0</gx:coord>\n                    <gx:coord>139.7744505 35.6871634 24.6</gx:coord>\n                    <gx:coord>139.7744227 35.687106 25.0</gx:coord>\n                    <gx:coord>139.7743283 35.68706 26.0</gx:coord>\n                    <gx:coord>139.7743746 35.6870094 26.0</gx:coord>\n                    <gx:coord>139.7742412 35.6869941 26.0</gx:coord>\n                    <gx:coord>139.774183 35.6869721 27.0</gx:coord>\n                    <gx:coord>139.7741375 35.6869553 27.0</gx:coord>\n                    <gx:coord>139.7740767 35.6869783 27.0</gx:coord>\n                    <gx:coord>139.774025 35.6869117 27.0</gx:coord>\n                    <gx:coord>139.7739817 35.6868767 28.0</gx:coord>\n                    <gx:coord>139.7739083 35.68686 28.0</gx:coord>\n                    <gx:coord>139.773875 35.68682 28.0</gx:coord>\n                    <gx:coord>139.7737767 35.6868 28.0</gx:coord>\n                    <gx:coord>139.77371 35.6867167 29.0</gx:coord>\n                    <gx:coord>139.7736383 35.6867067 29.0</gx:coord>\n                    <gx:coord>139.7736683 35.6866283 29.0</gx:coord>\n                    <gx:coord>139.7737179 35.6865694 29.0</gx:coord>\n                    <gx:coord>139.7738133 35.6863983 30.0</gx:coord>\n                    <gx:coord>139.7739001 35.6862209 30.0</gx:coord>\n                    <gx:coord>139.7740083 35.6860733 30.0</gx:coord>\n                    <gx:coord>139.7739667 35.6860333 30.0</gx:coord>\n                    <gx:coord>139.7740017 35.6859917 30.0</gx:coord>\n                    <gx:coord>139.7739498 35.6858833 30.0</gx:coord>\n                    <gx:coord>139.7739886 35.6858089 30.0</gx:coord>\n                    <gx:coord>139.7740422 35.68574 29.0</gx:coord>\n                    <gx:coord>139.7741294 35.6855667 28.0</gx:coord>\n                    <gx:coord>139.7742095 35.6855433 28.0</gx:coord>\n                    <gx:coord>139.774196 35.6855147 28.0</gx:coord>\n                    <gx:coord>139.7741683 35.6855317 28.0</gx:coord>\n                    <gx:coord>139.7742217 35.685435 28.0</gx:coord>\n                    <gx:coord>139.7743383 35.6853833 27.0</gx:coord>\n                    <gx:coord>139.77437 35.6853083 27.0</gx:coord>\n                    <gx:coord>139.77435 35.6852967 27.0</gx:coord>\n                    <gx:coord>139.77435 35.6852733 27.0</gx:coord>\n                    <gx:coord>139.77438 35.6852817 27.0</gx:coord>\n                    <gx:coord>139.774405 35.6852333 27.0</gx:coord>\n                    <gx:coord>139.7743917 35.68519 27.0</gx:coord>\n                    <gx:coord>139.7744654 35.6850191 26.0</gx:coord>\n                    <gx:coord>139.7744713 35.6848876 26.0</gx:coord>\n                    <gx:coord>139.7744201 35.684863 26.0</gx:coord>\n                    <gx:coord>139.7744114 35.6848097 25.0</gx:coord>\n                    <gx:coord>139.7744164 35.6847549 25.0</gx:coord>\n                    <gx:coord>139.774402 35.6847507 25.0</gx:coord>\n                    <gx:coord>139.7744067 35.6844817 24.0</gx:coord>\n                    <gx:coord>139.7744036 35.68446 24.0</gx:coord>\n                    <gx:coord>139.77439 35.6843217 23.0</gx:coord>\n                    <gx:coord>139.7744133 35.684325 23.0</gx:coord>\n                    <gx:coord>139.7744 35.6843317 23.0</gx:coord>\n                    <gx:coord>139.7744367 35.684145 22.0</gx:coord>\n                    <gx:coord>139.774396 35.68412 22.0</gx:coord>\n                    <gx:coord>139.7743773 35.6841156 22.0</gx:coord>\n                    <gx:coord>139.774365 35.684155 22.0</gx:coord>\n                    <gx:coord>139.774385 35.68409 22.0</gx:coord>\n                    <gx:coord>139.7743583 35.6840567 22.0</gx:coord>\n                    <gx:coord>139.7743467 35.6839917 22.0</gx:coord>\n                    <gx:coord>139.77433 35.6838617 21.0</gx:coord>\n                    <gx:coord>139.7743017 35.68379 21.0</gx:coord>\n                    <gx:coord>139.7742735 35.683781 21.0</gx:coord>\n                    <gx:coord>139.7742433 35.6838133 21.0</gx:coord>\n                    <gx:coord>139.774165 35.6838367 21.0</gx:coord>\n                    <gx:coord>139.7741617 35.6838267 21.0</gx:coord>\n                    <gx:coord>139.7741633 35.6838383 21.0</gx:coord>\n                    <gx:coord>139.77417 35.6837767 21.0</gx:coord>\n                    <gx:coord>139.7741833 35.683795 21.0</gx:coord>\n                    <gx:coord>139.7742133 35.68378 21.0</gx:coord>\n                    <gx:coord>139.7742517 35.6837883 21.0</gx:coord>\n                    <gx:coord>139.77426 35.6838267 21.0</gx:coord>\n                    <gx:coord>139.7741883 35.6836333 21.0</gx:coord>\n                    <gx:coord>139.7742167 35.683515 20.0</gx:coord>\n                    <gx:coord>139.77421 35.6834333 20.0</gx:coord>\n                    <gx:coord>139.7741817 35.6834083 20.0</gx:coord>\n                    <gx:coord>139.7741817 35.6832867 20.0</gx:coord>\n                    <gx:coord>139.7741267 35.6831467 21.0</gx:coord>\n                    <gx:coord>139.7740817 35.683085 22.0</gx:coord>\n                    <gx:coord>139.773952 35.6830253 23.0</gx:coord>\n                    <gx:coord>139.7738916 35.6829387 24.0</gx:coord>\n                    <gx:coord>139.7738234 35.6828583 25.0</gx:coord>\n                    <gx:coord>139.7736854 35.6827719 26.0</gx:coord>\n                    <gx:coord>139.7736703 35.682673 27.0</gx:coord>\n                    <gx:coord>139.7738147 35.6826086 27.0</gx:coord>\n                    <gx:coord>139.773865 35.682475 27.0</gx:coord>\n                    <gx:coord>139.7737945 35.682395 27.0</gx:coord>\n                    <gx:coord>139.773795 35.682385 27.0</gx:coord>\n                    <gx:coord>139.7736411 35.6824457 28.0</gx:coord>\n                    <gx:coord>139.7735083 35.6825142 29.0</gx:coord>\n                    <gx:coord>139.7734917 35.6824917 30.0</gx:coord>\n                    <gx:coord>139.7733975 35.6825919 29.0</gx:coord>\n                    <gx:coord>139.7732751 35.6825766 30.0</gx:coord>\n                    <gx:coord>139.7730769 35.6827158 28.0</gx:coord>\n                    <gx:coord>139.7729362 35.6826993 27.0</gx:coord>\n                    <gx:coord>139.7726321 35.6827907 26.0</gx:coord>\n                    <gx:coord>139.7724209 35.6828497 26.0</gx:coord>\n                    <gx:coord>139.7722586 35.6827472 25.0</gx:coord>\n                    <gx:coord>139.7721204 35.6825246 23.0</gx:coord>\n                    <gx:coord>139.7720366 35.682444 22.0</gx:coord>\n                    <gx:coord>139.771991 35.6823974 21.0</gx:coord>\n                    <gx:coord>139.7719283 35.68239 21.0</gx:coord>\n                    <gx:coord>139.7719367 35.6823333 21.0</gx:coord>\n                    <gx:coord>139.7718983 35.6823 21.0</gx:coord>\n                    <gx:coord>139.7718767 35.682245 21.0</gx:coord>\n                    <gx:coord>139.7719383 35.6821217 21.0</gx:coord>\n                    <gx:coord>139.7719233 35.6820883 21.0</gx:coord>\n                    <gx:coord>139.7717983 35.68205 20.0</gx:coord>\n                    <gx:coord>139.7716733 35.6820517 19.0</gx:coord>\n                    <gx:coord>139.771635 35.68203 19.0</gx:coord>\n                    <gx:coord>139.7715833 35.68207 19.0</gx:coord>\n                    <gx:coord>139.77162 35.68207 19.0</gx:coord>\n                    <gx:coord>139.7717 35.6820133 19.0</gx:coord>\n                    <gx:coord>139.7716683 35.6820167 19.0</gx:coord>\n                    <gx:coord>139.7716767 35.6820633 19.0</gx:coord>\n                    <gx:coord>139.7717933 35.6820683 20.0</gx:coord>\n                    <gx:coord>139.7717742 35.6819939 20.0</gx:coord>\n                    <gx:coord>139.771749 35.6818936 19.0</gx:coord>\n                    <gx:coord>139.7718757 35.6818513 20.0</gx:coord>\n                    <gx:coord>139.7720484 35.6817932 22.0</gx:coord>\n                    <gx:coord>139.77217 35.6817383 23.0</gx:coord>\n                    <gx:coord>139.7721817 35.68174 23.0</gx:coord>\n                    <gx:coord>139.77218 35.6817983 23.0</gx:coord>\n                    <gx:coord>139.7722433 35.681719 23.0</gx:coord>\n                    <gx:coord>139.7724585 35.6816211 25.0</gx:coord>\n                    <gx:coord>139.7725558 35.681574 26.0</gx:coord>\n                    <gx:coord>139.7726757 35.6814841 26.0</gx:coord>\n                    <gx:coord>139.7727608 35.6814549 26.0</gx:coord>\n                    <gx:coord>139.7728093 35.6814034 26.0</gx:coord>\n                    <gx:coord>139.772773 35.681303 26.0</gx:coord>\n                    <gx:coord>139.7727401 35.6812601 26.0</gx:coord>\n                    <gx:coord>139.7727034 35.6812247 26.0</gx:coord>\n                    <gx:coord>139.7726807 35.6811429 26.0</gx:coord>\n                    <gx:coord>139.7726037 35.6810924 26.0</gx:coord>\n                    <gx:coord>139.7725646 35.6810414 26.0</gx:coord>\n                    <gx:coord>139.7725377 35.6809944 26.0</gx:coord>\n                    <gx:coord>139.7724983 35.6809279 26.0</gx:coord>\n                    <gx:coord>139.7724783 35.680894 26.0</gx:coord>\n                    <gx:coord>139.7724983 35.6808283 27.0</gx:coord>\n                    <gx:coord>139.7724467 35.680725 26.0</gx:coord>\n                    <gx:coord>139.77246 35.680695 27.0</gx:coord>\n                    <gx:coord>139.7724183 35.680655 26.0</gx:coord>\n                    <gx:coord>139.7723233 35.6806334 26.0</gx:coord>\n                    <gx:coord>139.7723132 35.6805993 26.0</gx:coord>\n                    <gx:coord>139.7722603 35.6805483 25.0</gx:coord>\n                    <gx:coord>139.7722667 35.6804417 25.0</gx:coord>\n                    <gx:coord>139.772255 35.6804067 25.0</gx:coord>\n                    <gx:coord>139.7721667 35.6803 24.0</gx:coord>\n                    <gx:coord>139.7721183 35.6802783 24.0</gx:coord>\n                    <gx:coord>139.7721083 35.6801867 23.0</gx:coord>\n                    <gx:coord>139.7720706 35.68011 23.0</gx:coord>\n                    <gx:coord>139.7720804 35.6800783 23.0</gx:coord>\n                    <gx:coord>139.7719961 35.67998 22.0</gx:coord>\n                    <gx:coord>139.7719259 35.679871 21.0</gx:coord>\n                    <gx:coord>139.7718573 35.6797617 20.0</gx:coord>\n                    <gx:coord>139.7718249 35.6797283 20.0</gx:coord>\n                    <gx:coord>139.7717931 35.6796909 20.0</gx:coord>\n                    <gx:coord>139.7717704 35.6796304 20.0</gx:coord>\n                    <gx:coord>139.7717409 35.6795933 20.0</gx:coord>\n                    <gx:coord>139.77167 35.6795417 20.0</gx:coord>\n                    <gx:coord>139.771585 35.679435 20.0</gx:coord>\n                    <gx:coord>139.7715183 35.679395 21.0</gx:coord>\n                    <gx:coord>139.771495 35.679365 21.0</gx:coord>\n                    <gx:coord>139.771505 35.67919 22.0</gx:coord>\n                    <gx:coord>139.7714767 35.6791283 22.0</gx:coord>\n                    <gx:coord>139.7714445 35.6790837 22.2</gx:coord>\n                    <gx:coord>139.7713629 35.6790044 22.0</gx:coord>\n                    <gx:coord>139.7713243 35.67893 22.0</gx:coord>\n                    <gx:coord>139.7712917 35.6789267 22.0</gx:coord>\n                    <gx:coord>139.7713167 35.6788767 22.0</gx:coord>\n                    <gx:coord>139.771315 35.678835 22.0</gx:coord>\n                    <gx:coord>139.771247 35.6787742 22.0</gx:coord>\n                    <gx:coord>139.7712056 35.67868 21.0</gx:coord>\n                    <gx:coord>139.7711015 35.6786127 21.0</gx:coord>\n                    <gx:coord>139.7709812 35.6783875 18.0</gx:coord>\n                    <gx:coord>139.7708678 35.6781727 19.0</gx:coord>\n                    <gx:coord>139.7707255 35.6780098 20.0</gx:coord>\n                    <gx:coord>139.7705455 35.6777992 22.0</gx:coord>\n                    <gx:coord>139.770512 35.6776389 23.0</gx:coord>\n                    <gx:coord>139.7704659 35.6775301 24.0</gx:coord>\n                    <gx:coord>139.7703864 35.6774503 23.0</gx:coord>\n                    <gx:coord>139.7703388 35.6773956 23.0</gx:coord>\n                    <gx:coord>139.7702877 35.6772817 22.0</gx:coord>\n                    <gx:coord>139.7702742 35.677208 22.0</gx:coord>\n                    <gx:coord>139.7701228 35.6770815 21.0</gx:coord>\n                    <gx:coord>139.7700533 35.6769946 21.0</gx:coord>\n                    <gx:coord>139.7699812 35.6768683 21.0</gx:coord>\n                    <gx:coord>139.7698962 35.6768093 22.0</gx:coord>\n                    <gx:coord>139.7698504 35.676708 22.0</gx:coord>\n                    <gx:coord>139.7697901 35.6766496 23.0</gx:coord>\n                    <gx:coord>139.7697475 35.6765822 23.0</gx:coord>\n                    <gx:coord>139.7697011 35.6764296 24.0</gx:coord>\n                    <gx:coord>139.7696611 35.6763809 24.0</gx:coord>\n                    <gx:coord>139.7696333 35.6763417 25.0</gx:coord>\n                    <gx:coord>139.7695833 35.6763117 25.0</gx:coord>\n                    <gx:coord>139.7695517 35.6762083 25.0</gx:coord>\n                    <gx:coord>139.7695479 35.6761909 25.0</gx:coord>\n                    <gx:coord>139.769495 35.6760067 26.0</gx:coord>\n                    <gx:coord>139.76945 35.6759317 26.0</gx:coord>\n                    <gx:coord>139.7694146 35.6758833 26.0</gx:coord>\n                    <gx:coord>139.7693483 35.6757383 27.0</gx:coord>\n                    <gx:coord>139.7692487 35.6756064 27.0</gx:coord>\n                    <gx:coord>139.7691845 35.6755528 27.0</gx:coord>\n                    <gx:coord>139.7691563 35.6754858 26.0</gx:coord>\n                    <gx:coord>139.7691183 35.6754164 26.0</gx:coord>\n                    <gx:coord>139.7691383 35.6753517 26.0</gx:coord>\n                    <gx:coord>139.7690467 35.6753567 26.0</gx:coord>\n                    <gx:coord>139.76911 35.6752683 26.0</gx:coord>\n                    <gx:coord>139.7690183 35.6752417 26.0</gx:coord>\n                    <gx:coord>139.76901 35.6751383 26.0</gx:coord>\n                    <gx:coord>139.7689283 35.6750467 25.0</gx:coord>\n                    <gx:coord>139.7688677 35.6750332 25.0</gx:coord>\n                    <gx:coord>139.7688215 35.6749811 25.0</gx:coord>\n                    <gx:coord>139.7687808 35.6749254 25.0</gx:coord>\n                    <gx:coord>139.7686576 35.6748978 25.0</gx:coord>\n                    <gx:coord>139.7684346 35.6749075 23.0</gx:coord>\n                    <gx:coord>139.7683099 35.6749218 23.0</gx:coord>\n                    <gx:coord>139.76828 35.6749533 23.0</gx:coord>\n                    <gx:coord>139.7682517 35.6749333 23.0</gx:coord>\n                    <gx:coord>139.7681417 35.67496 22.0</gx:coord>\n                    <gx:coord>139.7681083 35.674925 22.0</gx:coord>\n                    <gx:coord>139.768039 35.6748703 22.0</gx:coord>\n                    <gx:coord>139.7679729 35.6748184 22.0</gx:coord>\n                    <gx:coord>139.7679446 35.6747706 22.0</gx:coord>\n                    <gx:coord>139.7677984 35.6746572 22.0</gx:coord>\n                    <gx:coord>139.7676533 35.6745867 22.0</gx:coord>\n                    <gx:coord>139.7676549 35.6744383 22.0</gx:coord>\n                    <gx:coord>139.7675584 35.6743706 22.0</gx:coord>\n                    <gx:coord>139.7674552 35.6742643 22.0</gx:coord>\n                    <gx:coord>139.7673812 35.6741781 22.0</gx:coord>\n                    <gx:coord>139.7673704 35.6741168 22.0</gx:coord>\n                    <gx:coord>139.7671233 35.6743517 21.0</gx:coord>\n                    <gx:coord>139.7670717 35.6743367 20.0</gx:coord>\n                    <gx:coord>139.7670833 35.6743667 20.0</gx:coord>\n                    <gx:coord>139.7669617 35.6744494 20.0</gx:coord>\n                    <gx:coord>139.766875 35.6745017 20.2</gx:coord>\n                    <gx:coord>139.7668167 35.6745533 19.6</gx:coord>\n                    <gx:coord>139.76656 35.6746983 23.0</gx:coord>\n                    <gx:coord>139.76656 35.674715 23.0</gx:coord>\n                    <gx:coord>139.7663383 35.6748717 27.0</gx:coord>\n                    <gx:coord>139.7662783 35.6748717 28.0</gx:coord>\n                    <gx:coord>139.76622 35.674905 29.0</gx:coord>\n                    <gx:coord>139.766125 35.6749817 31.0</gx:coord>\n                    <gx:coord>139.7660214 35.6750743 33.0</gx:coord>\n                    <gx:coord>139.7659767 35.6750767 33.0</gx:coord>\n                    <gx:coord>139.7660474 35.675186 32.0</gx:coord>\n                    <gx:coord>139.7660203 35.6751544 33.0</gx:coord>\n                    <gx:coord>139.7660345 35.6752085 32.0</gx:coord>\n                    <gx:coord>139.7660993 35.6751442 31.0</gx:coord>\n                    <gx:coord>139.7659262 35.6751701 34.0</gx:coord>\n                    <gx:coord>139.7658122 35.6750647 35.0</gx:coord>\n                    <gx:coord>139.7657389 35.6749597 34.0</gx:coord>\n                    <gx:coord>139.7656664 35.6748795 32.0</gx:coord>\n                    <gx:coord>139.7655944 35.6747665 30.0</gx:coord>\n                    <gx:coord>139.7655211 35.6746951 28.0</gx:coord>\n                    <gx:coord>139.7654665 35.6745682 26.0</gx:coord>\n                    <gx:coord>139.7653721 35.6745006 25.0</gx:coord>\n                    <gx:coord>139.7652682 35.6744079 24.0</gx:coord>\n                    <gx:coord>139.7652299 35.6743911 24.0</gx:coord>\n                    <gx:coord>139.7653323 35.6744984 25.0</gx:coord>\n                    <gx:coord>139.7654879 35.6746798 28.0</gx:coord>\n                    <gx:coord>139.7655939 35.6747968 30.0</gx:coord>\n                    <gx:coord>139.7656306 35.674876 32.0</gx:coord>\n                    <gx:coord>139.7656888 35.6749095 33.0</gx:coord>\n                    <gx:coord>139.7657598 35.6749593 34.0</gx:coord>\n                    <gx:coord>139.7657976 35.6749773 35.0</gx:coord>\n                    <gx:coord>139.7658309 35.6750741 35.0</gx:coord>\n                    <gx:coord>139.7657032 35.675116 34.0</gx:coord>\n                    <gx:coord>139.76551 35.6751151 31.0</gx:coord>\n                    <gx:coord>139.7653793 35.6751413 29.0</gx:coord>\n                    <gx:coord>139.765277 35.6751422 28.0</gx:coord>\n                    <gx:coord>139.7650747 35.6751996 25.0</gx:coord>\n                    <gx:coord>139.7648222 35.6750496 25.0</gx:coord>\n                    <gx:coord>139.7647467 35.6749863 25.0</gx:coord>\n                    <gx:coord>139.7645883 35.6749467 24.0</gx:coord>\n                    <gx:coord>139.7644633 35.6748483 23.0</gx:coord>\n                    <gx:coord>139.7642917 35.6747967 21.0</gx:coord>\n                    <gx:coord>139.7641876 35.6747753 21.0</gx:coord>\n                    <gx:coord>139.7640586 35.6747953 20.0</gx:coord>\n                    <gx:coord>139.7639509 35.6747803 20.0</gx:coord>\n                    <gx:coord>139.7637924 35.6747816 19.0</gx:coord>\n                    <gx:coord>139.7635638 35.6747546 19.0</gx:coord>\n                    <gx:coord>139.7632613 35.6747734 18.0</gx:coord>\n                    <gx:coord>139.7630461 35.674811 19.0</gx:coord>\n                    <gx:coord>139.7628079 35.6748633 21.0</gx:coord>\n                    <gx:coord>139.7627043 35.6748865 21.0</gx:coord>\n                    <gx:coord>139.7626299 35.6748768 22.0</gx:coord>\n                    <gx:coord>139.7625501 35.6747965 22.0</gx:coord>\n                    <gx:coord>139.762347 35.6747085 22.0</gx:coord>\n                    <gx:coord>139.7621903 35.6745485 21.0</gx:coord>\n                    <gx:coord>139.7620794 35.6743995 21.0</gx:coord>\n                    <gx:coord>139.7619588 35.6742622 21.0</gx:coord>\n                    <gx:coord>139.7617638 35.6741297 21.0</gx:coord>\n                    <gx:coord>139.7616737 35.6739935 20.0</gx:coord>\n                    <gx:coord>139.7614632 35.673919 20.0</gx:coord>\n                    <gx:coord>139.7614019 35.6738512 20.0</gx:coord>\n                    <gx:coord>139.7613273 35.6737766 20.0</gx:coord>\n                    <gx:coord>139.7612214 35.6736413 19.0</gx:coord>\n                    <gx:coord>139.7611665 35.6736857 19.0</gx:coord>\n                    <gx:coord>139.7610734 35.6737237 20.0</gx:coord>\n                    <gx:coord>139.7609862 35.6736973 20.0</gx:coord>\n                    <gx:coord>139.7609889 35.6737368 20.0</gx:coord>\n                    <gx:coord>139.760882 35.6738171 20.0</gx:coord>\n                    <gx:coord>139.7608678 35.6737878 20.0</gx:coord>\n                    <gx:coord>139.7608046 35.6738451 20.0</gx:coord>\n                    <gx:coord>139.7608495 35.6738448 20.0</gx:coord>\n                    <gx:coord>139.7608995 35.6738161 20.0</gx:coord>\n                    <gx:coord>139.7609332 35.6737844 20.0</gx:coord>\n                    <gx:coord>139.7610711 35.6737374 20.0</gx:coord>\n                    <gx:coord>139.7611417 35.6737001 20.0</gx:coord>\n                    <gx:coord>139.76138 35.673545 19.0</gx:coord>\n                    <gx:coord>139.7615571 35.6734844 18.0</gx:coord>\n                    <gx:coord>139.7617621 35.673381 17.0</gx:coord>\n                    <gx:coord>139.7620332 35.6731093 20.0</gx:coord>\n                    <gx:coord>139.7622919 35.6729311 21.0</gx:coord>\n                    <gx:coord>139.7624832 35.6728627 22.0</gx:coord>\n                    <gx:coord>139.7626199 35.6728083 22.0</gx:coord>\n                    <gx:coord>139.7627896 35.6726604 21.0</gx:coord>\n                    <gx:coord>139.7629545 35.6725354 20.0</gx:coord>\n                    <gx:coord>139.7631053 35.6724323 20.0</gx:coord>\n                    <gx:coord>139.7631878 35.6723652 20.0</gx:coord>\n                    <gx:coord>139.7632172 35.6723124 20.0</gx:coord>\n                    <gx:coord>139.7632117 35.672135 21.0</gx:coord>\n                    <gx:coord>139.763085 35.67207 22.0</gx:coord>\n                    <gx:coord>139.76315 35.672045 22.0</gx:coord>\n                    <gx:coord>139.76319 35.6720083 22.0</gx:coord>\n                    <gx:coord>139.7631433 35.6719833 22.0</gx:coord>\n                    <gx:coord>139.7630383 35.67202 22.0</gx:coord>\n                    <gx:coord>139.7629833 35.672015 22.0</gx:coord>\n                    <gx:coord>139.7629633 35.672 23.0</gx:coord>\n                    <gx:coord>139.762834 35.6719813 23.0</gx:coord>\n                    <gx:coord>139.762855 35.6719617 23.0</gx:coord>\n                    <gx:coord>139.762805 35.6719517 23.0</gx:coord>\n                    <gx:coord>139.762765 35.6719217 23.0</gx:coord>\n                    <gx:coord>139.7627042 35.6718083 23.0</gx:coord>\n                    <gx:coord>139.7626324 35.6717428 24.0</gx:coord>\n                    <gx:coord>139.7626018 35.671722 24.0</gx:coord>\n                    <gx:coord>139.7624882 35.6716284 24.0</gx:coord>\n                    <gx:coord>139.7623137 35.671445 23.0</gx:coord>\n                    <gx:coord>139.7622817 35.6713601 23.0</gx:coord>\n                    <gx:coord>139.7622067 35.671323 23.0</gx:coord>\n                    <gx:coord>139.76223 35.6712817 24.0</gx:coord>\n                    <gx:coord>139.7621617 35.6712733 24.0</gx:coord>\n                    <gx:coord>139.7621217 35.671145 24.0</gx:coord>\n                    <gx:coord>139.7620502 35.6710904 24.0</gx:coord>\n                    <gx:coord>139.7619868 35.6710716 24.0</gx:coord>\n                    <gx:coord>139.7619164 35.6709837 24.0</gx:coord>\n                    <gx:coord>139.7619057 35.670957 24.0</gx:coord>\n                    <gx:coord>139.761785 35.670955 24.0</gx:coord>\n                    <gx:coord>139.7617083 35.670905 24.0</gx:coord>\n                    <gx:coord>139.76168 35.6708367 25.0</gx:coord>\n                    <gx:coord>139.7616733 35.6707633 24.0</gx:coord>\n                    <gx:coord>139.7616017 35.670715 24.0</gx:coord>\n                    <gx:coord>139.7615733 35.67066 24.0</gx:coord>\n                    <gx:coord>139.7615283 35.6706233 24.0</gx:coord>\n                    <gx:coord>139.7613279 35.6705284 24.0</gx:coord>\n                    <gx:coord>139.7612261 35.6704916 24.0</gx:coord>\n                    <gx:coord>139.7611799 35.6704608 24.0</gx:coord>\n                    <gx:coord>139.7611341 35.6703505 24.0</gx:coord>\n                    <gx:coord>139.760998 35.6702254 25.0</gx:coord>\n                    <gx:coord>139.7609013 35.6701022 25.0</gx:coord>\n                    <gx:coord>139.7608468 35.6700754 25.0</gx:coord>\n                    <gx:coord>139.7607346 35.6700116 25.0</gx:coord>\n                    <gx:coord>139.7606984 35.6699231 25.0</gx:coord>\n                    <gx:coord>139.7606168 35.669852 24.0</gx:coord>\n                    <gx:coord>139.7605496 35.6697745 24.0</gx:coord>\n                    <gx:coord>139.7604392 35.6696944 23.0</gx:coord>\n                    <gx:coord>139.7603519 35.6695719 23.0</gx:coord>\n                    <gx:coord>139.7602234 35.6694729 22.0</gx:coord>\n                    <gx:coord>139.7600426 35.6693254 21.0</gx:coord>\n                    <gx:coord>139.7598884 35.6692152 22.0</gx:coord>\n                    <gx:coord>139.7597674 35.6690961 22.0</gx:coord>\n                    <gx:coord>139.7596848 35.6689648 22.0</gx:coord>\n                    <gx:coord>139.7595613 35.6688932 23.0</gx:coord>\n                    <gx:coord>139.7594457 35.6687648 23.0</gx:coord>\n                    <gx:coord>139.759386 35.6687096 24.0</gx:coord>\n                    <gx:coord>139.7592344 35.6685905 25.0</gx:coord>\n                    <gx:coord>139.7591482 35.6684804 26.0</gx:coord>\n                    <gx:coord>139.7590128 35.6683957 25.0</gx:coord>\n                    <gx:coord>139.7590251 35.6683557 25.0</gx:coord>\n                    <gx:coord>139.7591389 35.6683741 26.0</gx:coord>\n                    <gx:coord>139.7593644 35.6682855 25.0</gx:coord>\n                    <gx:coord>139.7595334 35.6682297 24.0</gx:coord>\n                    <gx:coord>139.7597045 35.6681591 22.0</gx:coord>\n                    <gx:coord>139.7597517 35.6680714 22.0</gx:coord>\n                    <gx:coord>139.7596879 35.6679642 21.0</gx:coord>\n                    <gx:coord>139.7596608 35.66781 21.0</gx:coord>\n                    <gx:coord>139.7595304 35.667704 21.0</gx:coord>\n                    <gx:coord>139.7595257 35.6675403 20.0</gx:coord>\n                    <gx:coord>139.7594195 35.667285 21.0</gx:coord>\n                    <gx:coord>139.7593572 35.6671657 22.0</gx:coord>\n                    <gx:coord>139.7592633 35.6671433 22.0</gx:coord>\n                    <gx:coord>139.7592282 35.6671059 22.0</gx:coord>\n                    <gx:coord>139.7592126 35.6670499 23.0</gx:coord>\n                    <gx:coord>139.7591467 35.6668483 23.0</gx:coord>\n                    <gx:coord>139.7591117 35.6668084 23.0</gx:coord>\n                    <gx:coord>139.7590531 35.6666425 24.0</gx:coord>\n                    <gx:coord>139.7590891 35.6665357 23.0</gx:coord>\n                    <gx:coord>139.7590999 35.6663547 23.0</gx:coord>\n                    <gx:coord>139.7591369 35.6662955 23.0</gx:coord>\n                    <gx:coord>139.7590989 35.6661786 23.0</gx:coord>\n                    <gx:coord>139.759147 35.6660012 23.0</gx:coord>\n                    <gx:coord>139.7590929 35.6659085 22.0</gx:coord>\n                    <gx:coord>139.7592072 35.6658407 23.0</gx:coord>\n                    <gx:coord>139.7592623 35.665765 23.0</gx:coord>\n                    <gx:coord>139.75933 35.6657367 23.0</gx:coord>\n                    <gx:coord>139.7595347 35.6656387 24.0</gx:coord>\n                    <gx:coord>139.7597006 35.6656065 25.0</gx:coord>\n                    <gx:coord>139.7597951 35.6655019 24.0</gx:coord>\n                    <gx:coord>139.7600161 35.6653955 24.0</gx:coord>\n                    <gx:coord>139.7601482 35.6653081 22.0</gx:coord>\n                    <gx:coord>139.7603732 35.6652071 18.0</gx:coord>\n                    <gx:coord>139.7605555 35.6650791 14.0</gx:coord>\n                    <gx:coord>139.7607005 35.6651824 13.0</gx:coord>\n                    <gx:coord>139.7608336 35.6652648 13.0</gx:coord>\n                    <gx:coord>139.7609429 35.6653472 14.0</gx:coord>\n                    <gx:coord>139.761081 35.6654707 15.0</gx:coord>\n                    <gx:coord>139.7611348 35.6655349 15.0</gx:coord>\n                    <gx:coord>139.7611386 35.6655645 16.0</gx:coord>\n                    <gx:coord>139.7611614 35.6656915 17.0</gx:coord>\n                    <gx:coord>139.7611296 35.6658463 19.0</gx:coord>\n                    <gx:coord>139.7611671 35.6658886 19.0</gx:coord>\n                    <gx:coord>139.7612116 35.6660565 20.0</gx:coord>\n                    <gx:coord>139.7612307 35.6661933 21.0</gx:coord>\n                    <gx:coord>139.761456 35.6661813 20.0</gx:coord>\n                    <gx:coord>139.7616163 35.6660827 17.0</gx:coord>\n                    <gx:coord>139.7616778 35.6660734 17.0</gx:coord>\n                    <gx:coord>139.7616811 35.6660612 16.0</gx:coord>\n                    <gx:coord>139.7615739 35.6661008 18.0</gx:coord>\n                    <gx:coord>139.7614613 35.6661978 20.0</gx:coord>\n                    <gx:coord>139.7612688 35.6662234 21.0</gx:coord>\n                    <gx:coord>139.7611962 35.6659988 20.0</gx:coord>\n                    <gx:coord>139.7611493 35.665887 19.0</gx:coord>\n                    <gx:coord>139.7611702 35.6656737 17.0</gx:coord>\n                    <gx:coord>139.7611858 35.6656052 16.0</gx:coord>\n                    <gx:coord>139.7611749 35.6655127 15.0</gx:coord>\n                    <gx:coord>139.7610491 35.6655479 16.0</gx:coord>\n                    <gx:coord>139.7609531 35.6654722 16.0</gx:coord>\n                    <gx:coord>139.7608619 35.6654464 16.0</gx:coord>\n                </gx:Track>\n            </Placemark>\n            <Folder>\n                <name>Marks [Km]</name>\n                <visibility>false</visibility>\n                <open>false</open>\n                <Placemark>\n                    <name>1. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.7739313,35.6868653,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>2. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.7719081,35.6818405,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>3. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.7683468,35.6749175,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>4. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.7617445,35.6741007,0</coordinates>\n                    </Point>\n                </Placemark>\n                <Placemark>\n                    <name>5. Km</name>\n                    <visibility>false</visibility>\n                    <Point>\n                        <coordinates>139.7593279,35.6686642,0</coordinates>\n                    </Point>\n                </Placemark>\n            </Folder>\n        </Folder>\n    \n        <Placemark>\n            <name>三越本店ライオン像</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.7740259,35.6857281,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>三井本館</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.773278,35.6863386,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>日本橋麒麟像</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.7743686,35.6840789,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>旧新橋停車場鉄道歴史展示室</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.761478,35.666017,0</coordinates>\n            </Point>\n        </Placemark>\n        <Placemark>\n            <name>ポルシェセンター銀座</name>\n            <visibility>1</visibility>\n            <Style>\n                <IconStyle>\n                    <Icon>\n                        <href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href>\n                    </Icon>\n                </IconStyle>\n            </Style>\n            <Point>\n                <extrude>1</extrude>\n                <altitudeMode>relativeToGround</altitudeMode>\n                 <coordinates>139.761043,35.666023,0</coordinates>\n            </Point>\n        </Placemark>\n</Document></kml>";
+  const photosByWaypoint = {};
+  const iconsByWaypoint = {};
+  const DEFAULT_ICON = "photo_camera";
+
+  // waypoint名には、以前のphotodbエクスポート機能(廃止済み)が付与した
+  // 末尾の"_<uuid>"が残っていることがある(レガシーデータ)。表示用には
+  // それを取り除く(photosByWaypoint/iconsByWaypointのキーは生の名前の
+  // ままなので、マッチングには使わない)。
+  function displayName(name) {
+    const i = name.lastIndexOf("_");
+    return i === -1 ? name : name.slice(0, i);
+  }
+
+  // アイコン画像はエクスポート時にこのページと同じディレクトリの
+  // icons/<key>.svgへコピー済み(写真のimages/と同じ考え方。
+  // MkdocsExport.copy_used_icons!/2参照)。アイコンキーごとにStyleを
+  // キャッシュし、同じアイコンを使う複数のwaypointで使い回す。
+  const iconStyleCache = new Map();
+  function iconStyle(icon) {
+    const key = icon || DEFAULT_ICON;
+    let style = iconStyleCache.get(key);
+    if (!style) {
+      style = new ol.style.Style({
+        image: new ol.style.Icon({
+          anchor: [0.5, 0.5],
+          anchorXUnits: "fraction",
+          anchorYUnits: "fraction",
+          // crossOriginは付けない: アイコンはこのページと同じディレクトリの
+          // ローカルファイル(icons/<key>.svg)なので不要。file://で開いた場合、
+          // originが"null"になりCORSモードのfetch自体がブロックされる
+          // (`Access to image at 'file:///...' from origin 'null' has been
+          // blocked by CORS policy`)ため、むしろ付けると読み込みに失敗する。
+          src: `icons/${key}.svg`,
+        }),
+      });
+      iconStyleCache.set(key, style);
+    }
+    return style;
+  }
+
+  function labelStyle(name) {
+    return new ol.style.Style({
+      text: new ol.style.Text({
+        text: name,
+        font: "bold 14px Arial,Verdana,Courier New",
+        overflow: true,
+        fill: new ol.style.Fill({ color: "#222" }),
+        stroke: new ol.style.Stroke({ color: "#eee", width: 2 }),
+        textAlign: "left",
+        offsetX: 22,
+      }),
+    });
+  }
+
+  const source = new ol.source.Vector();
+  const format = new ol.format.KML({ extractStyles: true });
+  const features = format.readFeatures(kmlText, {
+    dataProjection: "EPSG:4326",
+    featureProjection: "EPSG:4326",
+  });
+
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry) continue;
+    const type = geometry.getType();
+
+    if (type === "LineString") {
+      feature.setStyle(
+        new ol.style.Style({
+          stroke: new ol.style.Stroke({ color: "#0000FF", width: 3 }),
+        }),
+      );
+      source.addFeature(feature);
+    } else if (type === "Point") {
+      const name = feature.get("name") || "";
+      if (name.endsWith(". Km")) continue;
+      feature.setStyle([iconStyle(iconsByWaypoint[name]), labelStyle(displayName(name))]);
+      source.addFeature(feature);
+    }
+  }
+
+  const map = new ol.Map({
+    target: "map",
+    layers: [
+      new ol.layer.Tile({ source: new ol.source.OSM() }),
+      new ol.layer.Vector({ source: source }),
+    ],
+    view: new ol.View({ projection: "EPSG:4326", center: [0, 0], zoom: 2 }),
+    controls: [new ol.control.Zoom(), new ol.control.Attribution()],
+  });
+  map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+
+  // tracklog(高度付きのgx:Track由来LineString)がある場合だけ、
+  // 距離・高度の断面図をc3.jsで表示する。stroll.jsのChart/getTrackと
+  // 同じ考え方(区間ごとの距離を積算してdistance/elevationの列を作る)。
+  // timestampは<gx:Track>の<when>から来る4番目の座標成分(coord[3]、
+  // ミリ秒epoch)の区間差分。<when>は必須要素ではないため無い場合は
+  // nullのままにし、後段の再生アニメーションはcanAnimateがfalseになって
+  // 無効化される(assets/svelte/map.tsのgetTrackStatsと同じ前提)。
+  const tracks = [];
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry || geometry.getType() !== "LineString") continue;
+    const coords = geometry.getCoordinates();
+    if (coords.length === 0 || coords[0].length < 3) continue;
+
+    tracks.push({ distance: 0, timestamp: 0, coord: coords[0] });
+    for (let i = 0; i < coords.length - 1; i++) {
+      const distance = ol.sphere.getDistance(coords[i], coords[i + 1]);
+      const hasTime = coords[i].length > 3 && coords[i + 1].length > 3;
+      let timestamp = hasTime ? coords[i + 1][3] - coords[i][3] : null;
+      // <when>が時系列順である前提が崩れている(逆順/重複KMLの編集ミスなど)場合、
+      // 所要時間が負になり再生アニメーションのCSS transitionが不正な値になる。
+      // <when>が無い場合と同様nullにして、canAnimateがfalseになり再生自体を
+      // 無効化されるようにする(一部区間だけ壊れた状態での再生はサポートしない)。
+      if (timestamp !== null && timestamp < 0) {
+        console.warn(
+          `[stroll] track point ${i + 1} has an out-of-order <when> timestamp ` +
+            `(prev=${coords[i][3]}, next=${coords[i + 1][3]}, Δ=${timestamp}ms). ` +
+            `Disabling playback animation for this track.`,
+        );
+        timestamp = null;
+      }
+      tracks.push({ distance: distance, timestamp: timestamp, coord: coords[i + 1] });
+    }
+  }
+
+  // 全区間に時刻があるトラックだけ再生アニメーションを有効にする
+  // (一部区間だけ時刻ありという半端な状態はサポートしない)。
+  const canAnimate =
+    tracks.length > 1 && tracks.slice(1).every((t) => typeof t.timestamp === "number");
+
+  if (tracks.length > 0) {
+    document.body.classList.add("has-chart");
+    map.updateSize();
+
+    const chart = c3.generate({
+      bindto: "#chart",
+      padding: { top: 10, right: 10 },
+      data: { x: "x", columns: [] },
+      axis: {
+        x: {
+          type: "indexed",
+          label: { text: "距離 (km)", position: "outer-center" },
+          tick: {
+            format: (v) => `${Math.round(v * 10) / 10}`,
+            count: 20,
+          },
+        },
+        y: { label: { text: "高度 (m)", position: "outer-middle" } },
+      },
+      legend: { show: false },
+    });
+
+    let total_distance = 0;
+    const distance = [];
+    const elevation = [];
+    for (const track of tracks) {
+      total_distance += track.distance;
+      elevation.push(track.coord[2]);
+      distance.push(Math.round((total_distance / 1000) * 100) / 100);
+    }
+    chart.load({
+      columns: [["x"].concat(distance), ["高度"].concat(elevation)],
+      done: () => setChartPoint(0),
+    });
+  }
+
+  // 地図上のトラック線にマウスを合わせると、最も近いトラック点に
+  // 対応するチャート上の点を赤くする(stroll.jsのonPoint/handlePointerMoveと同じ考え方)。
+  // 再生アニメーション中はhandlePointerMove自体を外して、チャート上の点は
+  // 再生位置(setChartPoint)側だけが更新するようにする。
+  function setChartPoint(index) {
+    d3.selectAll("#chart .c3-circle").style("fill", (data, i) =>
+      i === index ? "red" : "transparent",
+    );
+  }
+
+  function handlePointerMove(evt) {
+    if (evt.dragging) return;
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f, {
+      hitTolerance: 5,
+    });
+    if (!feature || feature.getGeometry().getType() !== "LineString") return;
+
+    let nearestIndex = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < tracks.length; i++) {
+      const c = tracks[i].coord;
+      const diff =
+        Math.abs(c[0] - evt.coordinate[0]) + Math.abs(c[1] - evt.coordinate[1]);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nearestIndex = i;
+      }
+    }
+    setChartPoint(nearestIndex);
+  }
+
+  if (tracks.length > 0) {
+    map.on("pointermove", handlePointerMove);
+  }
+
+  // トラックログに沿ってさるのアイコンをアニメーション再生する
+  // (assets/svelte/stroll.jsのStrollMapの考え方の移植。ただしこのページは
+  // EPSG:4326のままなので、stroll.js側にあったEPSG:3857<->経緯度の変換は
+  // 不要)。距離/経過時間/速度の表示は、チャート分の高さを増やしたくない
+  // ため<style>の.stroll-hudで地図左下に重ねる(#map/#chartの高さは
+  // mkdocs_export.exのiframe_height計算と手動で合わせているため、
+  // 高さが変わる要素を増やしたくない)。
+  if (canAnimate) {
+    const SPEED = 120;
+    const OFFSET = 32;
+    // さるがwaypointに近づいたら地図を拡大する(stroll.jsのKmlMap.zoomInMap/
+    // NEAR_MARKER_ZOOMと同じ考え方)。倍率は固定値とし、離れたら再生開始時の
+    // ズーム(baseZoom、handleMoveEndで随時更新)に戻す。
+    const ZOOM_IN_DISTANCE = 100; // メートル
+    const START_ZOOM = 16; // さるクリック時にこのズームへ寄る(baseZoomの初期値にもなる)
+    const NEAR_MARKER_ZOOM = 18; // START_ZOOMとの差でマーカー接近時に寄った感を出す
+    const waypoints = features
+      .filter((f) => f.getGeometry() && f.getGeometry().getType() === "Point")
+      .map((f) => ({ name: f.get("name") || "", coord: f.getGeometry().getCoordinates() }))
+      .filter((w) => !w.name.endsWith(". Km"));
+    const zoomInMap = new Map();
+    for (const waypoint of waypoints) {
+      for (let i = 0; i < tracks.length; i++) {
+        if (ol.sphere.getDistance(tracks[i].coord, waypoint.coord) <= ZOOM_IN_DISTANCE) {
+          if (!zoomInMap.has(i)) zoomInMap.set(i, []);
+          zoomInMap.get(i).push(waypoint);
+        }
+      }
+    }
+    const hud = document.createElement("div");
+    hud.className = "stroll-hud";
+    document.getElementById("map").appendChild(hud);
+
+    const elmSaru = document.createElement("img");
+    elmSaru.src = "stroll/saru.png";
+    elmSaru.className = "stroll-marker";
+    const elmGoal = document.createElement("img");
+    elmGoal.src = "stroll/saru-goal.png";
+    elmGoal.className = "stroll-marker";
+
+    const overlay = new ol.Overlay({ element: elmSaru, positioning: "center-center" });
+    map.addOverlay(overlay);
+    overlay.setPosition(tracks[0].coord);
+
+    const formatTime = (seconds) => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return [h, m, s].map((v) => v.toString().padStart(2, "0")).join(":");
+    };
+    // 値と単位を別々に返す([値, 単位])。数値の桁数が変わっても単位の
+    // 表示位置がズレないよう、setHud側で数値部分だけを固定幅にするため。
+    const distanceText = (d) => [Math.round((d / 1000) * 100) / 100, "km"];
+    const elapsedText = (elapsed, speed) => [formatTime((elapsed * speed) / 1000), "hrs"];
+    // 区間の実速度(km/h)。distanceはメートル、rawMsは<when>由来の実時間の
+    // ミリ秒(SPEEDによる圧縮前の値)を渡す — 再生を何倍速にしても実際に
+    // 歩いた速さの表示は変わらないようにするため。
+    const speedText = (d, rawMs) => {
+      if (!rawMs) return [0, "km/h"];
+      return [Math.round((d / (rawMs / 1000)) * 3.6 * 10) / 10, "km/h"];
+    };
+    const statHtml = (icon, title, [value, unit]) =>
+      `<span class="stroll-stat" title="${title}"><span class="stroll-icon">${icon}</span>` +
+      `<span class="stroll-value"><span class="stroll-number">${value}</span><span class="stroll-unit">${unit}</span></span></span>`;
+    const setHud = (d, t, s) => {
+      hud.innerHTML =
+        statHtml("📏", "Distance", d) + statHtml("⏱️", "Elapsed", t) + statHtml("⚡", "Speed", s);
+    };
+
+    let total_distance = 0;
+    let total_time = 0;
+    for (const track of tracks) {
+      total_distance += track.distance;
+      total_time += track.timestamp;
+    }
+    setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+
+    const isOutside = (coord) => {
+      const mapSize = map.getSize();
+      const innerSize = [mapSize[0] - OFFSET * 2, mapSize[1] - OFFSET * 2];
+      const extent = map.getView().calculateExtent(innerSize);
+      return (
+        coord[0] >= extent[2] ||
+        coord[0] <= extent[0] ||
+        coord[1] >= extent[3] ||
+        coord[1] <= extent[1]
+      );
+    };
+
+    // TimeKeeper: requestAnimationFrameで経過時間を積算するだけの
+    // 汎用タイマー(stroll.jsのTimeKeeperと同じ考え方)。callbackの戻り値の
+    // 分だけ次フレームの経過時間をスキップできる(遠方へジャンプする間の
+    // 一時停止に使う。下のtk.start参照)。
+    function createTimeKeeper() {
+      const STOPPED = 0;
+      const PAUSED = 1;
+      const RUNNING = 2;
+      let callback;
+      let ref;
+      let prevTimestamp;
+      let elapsed = 0;
+      let state = STOPPED;
+      let skipTime = 0;
+
+      function loop(timestamp) {
+        if (prevTimestamp === undefined) prevTimestamp = timestamp;
+        timestamp += skipTime;
+        elapsed += timestamp - prevTimestamp;
+        skipTime += callback(Math.trunc(elapsed));
+        prevTimestamp = timestamp;
+        if (state === RUNNING) ref = requestAnimationFrame(loop);
+      }
+
+      return {
+        start(cb) {
+          if (state !== STOPPED) return;
+          state = RUNNING;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          elapsed = 0;
+          callback = cb;
+          ref = requestAnimationFrame(loop);
+        },
+        resume() {
+          if (state !== PAUSED) return;
+          state = RUNNING;
+          ref = requestAnimationFrame(loop);
+        },
+        pause() {
+          if (state !== RUNNING) return;
+          state = PAUSED;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        stop() {
+          state = STOPPED;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        getElapsed: () => elapsed,
+      };
+    }
+
+    const tk = createTimeKeeper();
+    let isRunning = false;
+    let legFrom = tracks[0].coord;
+    let legTo = tracks[0].coord;
+    let legDuration = 0;
+    let legStartElapsed = 0;
+    let suppressMoveHandlers = false;
+    let baseZoom = map.getView().getZoom();
+    let isNearMarker = false;
+
+    const legFraction = () => {
+      if (legDuration <= 0) return 1;
+      return Math.min(1, Math.max(0, (tk.getElapsed() - legStartElapsed) / legDuration));
+    };
+    const currentCoord = () => {
+      const fraction = legFraction();
+      return [
+        legFrom[0] + (legTo[0] - legFrom[0]) * fraction,
+        legFrom[1] + (legTo[1] - legFrom[1]) * fraction,
+      ];
+    };
+    const handleMoveStart = () => {
+      if (suppressMoveHandlers) return;
+      elmSaru.parentNode.style.transition = "";
+      overlay.setPosition(currentCoord());
+      tk.pause();
+    };
+    const handleMoveEnd = () => {
+      if (suppressMoveHandlers) return;
+      if (isRunning) baseZoom = map.getView().getZoom();
+      const remaining = legDuration * (1 - legFraction());
+      elmSaru.parentNode.style.transition = remaining > 0 ? `all ${remaining}ms linear` : "";
+      overlay.setPosition(legTo);
+      tk.resume();
+    };
+
+    elmSaru.onclick = () => {
+      if (isRunning) return;
+      isRunning = true;
+      map.un("pointermove", handlePointerMove);
+      // クリックした瞬間に開始地点へ寄る(stroll.jsのelmKuma.onclickと同じ
+      // 考え方)。この時点のズームをbaseZoomにする(以後ユーザーが手動で
+      // ズームを変えればhandleMoveEndがそれを新しいbaseZoomに更新する)。
+      map.getView().setCenter(tracks[0].coord);
+      map.getView().setZoom(START_ZOOM);
+      baseZoom = START_ZOOM;
+      // ゴール到達後にリプレイした時、前回終了時点の値(ゴール地点の座標)が
+      // 残らないよう区間状態を開始地点にリセットする。
+      legFrom = tracks[0].coord;
+      legTo = tracks[0].coord;
+      legDuration = 0;
+      legStartElapsed = 0;
+      isNearMarker = false;
+      let index = 0;
+      let distance = 0;
+      let timestamp = 0;
+      let currentSpeedText = ["-", ""];
+
+      tk.start((elapsed) => {
+        // 距離/速度はadvanceToTrack内(区間が進んだ時)だけ更新し、経過時間
+        // だけ毎フレーム更新する(stroll.jsのelmKuma.onclickと同じ考え方。
+        // distance/speedを毎フレーム上書きすると区間の途中で表示が
+        // リセットされてしまう)。
+        setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+        if (timestamp <= elapsed) {
+          if (index < tracks.length) {
+            setChartPoint(index);
+            const track = tracks[index];
+            // track.timestampは<when>由来の実時間(ms)。再生(timestamp
+            // アキュムレータ/CSS transition)はtk.elapsed(実時間)と直接
+            // 比較するため、SPEED倍だけ圧縮したlegMsを使う。速度表示だけは
+            // 圧縮前のtrack.timestampをそのまま渡して実際の歩行速度を出す
+            // (ここをtrack.timestampのままにするとSPEED倍遅く進む上、
+            // speedTextの分母も引きずられて速度が0近くに丸まっていた)。
+            const advanceToTrack = () => {
+              const legMs = track.timestamp / SPEED;
+              distance += track.distance;
+              timestamp += legMs;
+              legFrom = legTo;
+              legTo = track.coord;
+              legDuration = legMs;
+              legStartElapsed = elapsed;
+              elmSaru.parentNode.style.transition = `all ${legMs}ms linear`;
+              overlay.setPosition(track.coord);
+              currentSpeedText = speedText(track.distance, track.timestamp);
+              setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+              index++;
+            };
+            // waypointに近づいたら拡大し、離れたらbaseZoomに戻す
+            // (stroll.jsのzoomInMap/NEAR_MARKER_ZOOMと同じ考え方)。今の
+            // indexの100m圏内にwaypointがあるかどうかだけで判定する
+            // (訪問済みかどうかは見ない。一度圏内→圏外→圏内と出入りしてから
+            // 最接近するルートで、既訪問扱いにして最接近時のズームを
+            // 取りこぼすことがあったため)。
+            const zoomMarkers = zoomInMap.get(index) || [];
+            const shouldZoomIn = zoomMarkers.length > 0;
+            const zoomChanged = shouldZoomIn !== isNearMarker;
+            if (isOutside(track.coord) || zoomChanged) {
+              isNearMarker = shouldZoomIn;
+              suppressMoveHandlers = true;
+              tk.pause();
+              elmSaru.parentNode.style.transition = "";
+              map.getView().setCenter(track.coord);
+              if (zoomChanged) {
+                map.getView().setZoom(shouldZoomIn ? NEAR_MARKER_ZOOM : baseZoom);
+              }
+              const onMoveEnd = () => {
+                map.un("moveend", onMoveEnd);
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    suppressMoveHandlers = false;
+                    tk.resume();
+                    advanceToTrack();
+                  });
+                });
+              };
+              map.on("moveend", onMoveEnd);
+            } else {
+              advanceToTrack();
+            }
+          } else {
+            elmSaru.parentNode.style.transition = "";
+            overlay.setElement(elmGoal);
+            elmGoal.onclick = () => {
+              setChartPoint(0);
+              overlay.setElement(elmSaru);
+              overlay.setPosition(tracks[0].coord);
+              setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+              map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+            };
+            map.un("movestart", handleMoveStart);
+            map.un("moveend", handleMoveEnd);
+            map.on("pointermove", handlePointerMove);
+            tk.stop();
+            isRunning = false;
+          }
+        }
+        // 遠方へのジャンプでカメラをパンしている間はtk.pause()するため、
+        // 6時間以上先にジャンプする区間だけはその間の経過時間をスキップする
+        // (パン待ちのために実時間で6時間相当も止まらせないため。
+        // stroll.jsのelmKuma.onclickと同じ考え方)。
+        const hour = ((timestamp - elapsed) * SPEED) / 1000 / 3600;
+        return hour >= 6 ? timestamp - elapsed : 0;
+      });
+      map.on("movestart", handleMoveStart);
+      map.on("moveend", handleMoveEnd);
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") tk.resume();
+      if (document.visibilityState === "hidden") tk.pause();
+    });
+  }
+
+  const popup = document.getElementById("popup");
+  const popupOverlay = new ol.Overlay({ element: popup, positioning: "bottom-center" });
+  map.addOverlay(popupOverlay);
+
+  map.on("click", (evt) => {
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f);
+    if (!feature || feature.getGeometry().getType() !== "Point") {
+      popup.style.display = "none";
+      return;
+    }
+
+    const name = feature.get("name") || "";
+    const photos = photosByWaypoint[name] || [];
+    if (!photos[0]) {
+      popup.style.display = "none";
+      return;
+    }
+    popup.innerHTML = '<img src="' + encodeURI(photos[0].image_path) + '">';
+    popup.style.display = "block";
+    popupOverlay.setPosition(feature.getGeometry().getCoordinates());
+  });
+</script>
+</body>
+</html>

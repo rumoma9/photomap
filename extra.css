@@ -1,0 +1,586 @@
+/*
+ * Dracula theme for Material for MkDocs
+ * Based on the official Dracula color palette
+ *
+ * Usage in mkdocs.yml:
+ *   theme:
+ *     name: material
+ *     palette:
+ *       scheme: dracula
+ *   extra_css:
+ *     - extra.css
+ */
+
+/* =============================================
+   Dracula カラーパレット定義
+   ============================================= */
+:root {
+  --dracula-background:  #1a1a1a;
+  --dracula-current:     #3a3a3a;
+  --dracula-foreground:  #f8f8f2;
+  --dracula-comment:     #6272a4;
+  --dracula-cyan:        #80ffea;
+  --dracula-green:       #8aff80;
+  --dracula-orange:      #ffca80;
+  --dracula-pink:        #ff80bf;
+  --dracula-purple:      #9580ff;
+  --dracula-red:         #ff9580;
+  --dracula-yellow:      #ffff80;
+}
+
+/* =============================================
+   Material カスタムカラースキーム: dracula
+   ============================================= */
+[data-md-color-scheme="dracula"] {
+
+  /* 背景色 */
+  --md-default-bg-color:            var(--dracula-background);
+  --md-default-bg-color--light:     #242424cc;
+  --md-default-bg-color--lighter:   #24242480;
+  --md-default-bg-color--lightest:  #24242440;
+
+  /* 文字色 */
+  --md-default-fg-color:            var(--dracula-foreground);
+  --md-default-fg-color--light:     #f8f8f2cc;
+  --md-default-fg-color--lighter:   #f8f8f280;
+  --md-default-fg-color--lightest:  #f8f8f240;
+
+  /* プライマリカラー（ヘッダー・サイドバー） */
+  --md-primary-fg-color:            var(--dracula-purple);
+  --md-primary-fg-color--light:     #b4a4ff;
+  --md-primary-fg-color--dark:      #7060cc;
+  --md-primary-bg-color:            #8a8a8a;
+  --md-primary-bg-color--light:     #8a8a8acc;
+
+  /* アクセントカラー（リンク・ホバー） */
+  --md-accent-fg-color:             var(--dracula-cyan);
+  --md-accent-fg-color--transparent:#80ffea1a;
+  --md-accent-bg-color:             var(--dracula-background);
+
+  /* コードブロック */
+  --md-code-fg-color:               var(--dracula-foreground);
+  --md-code-bg-color:               #242424;
+  --md-code-hl-color:               var(--dracula-current);
+  --md-code-hl-number-color:        var(--dracula-purple);
+  --md-code-hl-special-color:       var(--dracula-pink);
+  --md-code-hl-function-color:      var(--dracula-green);
+  --md-code-hl-constant-color:      var(--dracula-purple);
+  --md-code-hl-keyword-color:       var(--dracula-pink);
+  --md-code-hl-string-color:        var(--dracula-yellow);
+  --md-code-hl-name-color:          var(--dracula-foreground);
+  --md-code-hl-operator-color:      var(--dracula-pink);
+  --md-code-hl-comment-color:       var(--dracula-comment);
+
+  /* フッター（本文と同じ背景色にして、ページ下端で色が
+     切り替わって見える継ぎ目が出ないようにする） */
+  --md-footer-fg-color:             var(--dracula-foreground);
+  --md-footer-fg-color--light:      #f8f8f2b3;
+  --md-footer-fg-color--lighter:    #f8f8f280;
+  --md-footer-bg-color:             var(--md-default-bg-color);
+  --md-footer-bg-color--dark:       var(--md-default-bg-color);
+
+  /* テーブル・区切り線 */
+  --md-typeset-table-color:         #f8f8f214;
+  --md-typeset-table-color--light:  #f8f8f20a;
+
+  /* 警告・注意ブロック */
+  --md-admonition-fg-color:         var(--dracula-foreground);
+  --md-admonition-bg-color:         #242424;
+
+  /* シャドウ */
+  --md-shadow-z1: 0 0.2rem 0.5rem #00000066, 0 0 0.05rem #00000033;
+  --md-shadow-z2: 0 0.2rem 0.8rem #00000066, 0 0 0.05rem #00000033;
+  --md-shadow-z3: 0 0.35rem 1rem #0000007a, 0 0 0.05rem #00000033;
+
+  /* zensicalの検索ダイアログ等（Shadow DOM内の「modern」コンポーネント）が
+     使う変数。上のMaterial互換(--md-*)変数とは別系統で、zensical組み込みの
+     "slate"スキームにだけ暗い値が定義されており(assets/stylesheets/modern/
+     palette.*.min.cssの[data-md-color-scheme="slate"]ブロック)、独自スキーム名
+     "dracula"には対応が無かったため常にライトのデフォルト値のままだった
+     (検索ダイアログだけダークモードにならない不具合の原因)。ここで
+     "slate"と同じ4変数(foreground/background/background-subtle/backdrop)を
+     dracula用に明示的に定義する。カスタムプロパティはShadow DOMの境界を
+     越えて継承されるため、:rootで定義するだけでダイアログ側にも反映される。
+     mkdocs(Material for MkDocs)側はこの変数群を使わないため無害。 */
+  --color-foreground: 248 248 242;
+  --color-background: 26 26 26;
+  --color-background-subtle: 58 58 58;
+  --color-backdrop: 11 12 15;
+}
+
+/* =============================================
+   ヘッダー
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-header {
+  background-color: #242424;
+  border-bottom: 1px solid var(--dracula-current);
+}
+
+[data-md-color-scheme="dracula"] .md-header__title {
+  color: #b0b0b0;
+}
+
+[data-md-color-scheme="dracula"] .md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: var(--md-default-bg-color);
+  color: #b0b0b0;
+}
+
+/* =============================================
+   サイドナビゲーション
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-nav {
+  background-color: var(--dracula-background);
+}
+
+[data-md-color-scheme="dracula"] .md-nav__link {
+  color: #b0b0b0;
+}
+
+[data-md-color-scheme="dracula"] .md-nav__link:hover,
+[data-md-color-scheme="dracula"] .md-nav__link:focus {
+  color: var(--dracula-cyan);
+}
+
+[data-md-color-scheme="dracula"] .md-nav__link--active {
+  color: #26a69a !important;
+  font-weight: 700;
+}
+
+/* =============================================
+   リンク
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-typeset a {
+  color: var(--dracula-cyan);
+}
+
+[data-md-color-scheme="dracula"] .md-typeset a:hover {
+  color: var(--dracula-pink);
+}
+
+/* =============================================
+   コードブロック
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-typeset code,
+[data-md-color-scheme="dracula"] .md-typeset pre {
+  background-color: #242424;
+  border: 1px solid var(--dracula-current);
+  border-radius: 6px;
+}
+
+[data-md-color-scheme="dracula"] .highlight {
+  background-color: #242424;
+}
+
+/* =============================================
+   検索ボックス
+   ============================================= */
+/* .md-search__formはmkdocs(Material)、.md-search__buttonはzensical
+   (classicバリアント)が閉じた状態の検索ボックスに使うクラス名で、
+   同じ見た目の要素だが名前が違う。片方しか指定しないと、指定していない
+   方は既定のrgba(0,0,0,.26)（黒26%)のままになり、意図せず濃いグレーの
+   ボックスになってしまう。両方まとめて指定することで両ツールで揃える。 */
+[data-md-color-scheme="dracula"] .md-search__form,
+[data-md-color-scheme="dracula"] .md-search__button {
+  background-color: var(--dracula-current);
+  border-radius: 6px;
+}
+
+[data-md-color-scheme="dracula"] .md-search__input,
+[data-md-color-scheme="dracula"] .md-search__button {
+  color: var(--dracula-foreground);
+}
+
+[data-md-color-scheme="dracula"] .md-search__input::placeholder {
+  color: var(--dracula-comment);
+}
+
+[data-md-color-scheme="dracula"] .md-search-result__meta {
+  background-color: var(--dracula-current);
+  color: var(--dracula-comment);
+}
+
+[data-md-color-scheme="dracula"] .md-search-result__article {
+  background-color: #242424;
+}
+
+[data-md-color-scheme="dracula"] .md-search-result__article:hover {
+  background-color: var(--dracula-current);
+}
+
+/* =============================================
+   テーブル
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-typeset table:not([class]) th {
+  background-color: var(--dracula-current);
+  color: var(--dracula-foreground);
+}
+
+[data-md-color-scheme="dracula"] .md-typeset table:not([class]) tr:hover {
+  background-color: #3a3a3a40;
+}
+
+/* =============================================
+   見出し
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-typeset h1,
+[data-md-color-scheme="dracula"] .md-typeset h2,
+[data-md-color-scheme="dracula"] .md-typeset h3,
+[data-md-color-scheme="dracula"] .md-typeset h4 {
+  color: #b0b0b0;
+}
+
+/* =============================================
+   スクロールバー
+   ============================================= */
+[data-md-color-scheme="dracula"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+[data-md-color-scheme="dracula"] ::-webkit-scrollbar-track {
+  background: var(--dracula-background);
+}
+
+[data-md-color-scheme="dracula"] ::-webkit-scrollbar-thumb {
+  background: var(--dracula-purple);
+  border-radius: 4px;
+}
+
+[data-md-color-scheme="dracula"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--dracula-cyan);
+}
+
+/* =============================================
+   左サイドバー(ナビ)のスクロールバー: ホバー時だけ表示
+   幅を0にして畳んでおき、ホバー時だけ幅を広げることで、
+   macOSのオーバーレイスクロールバーのように振る舞わせる。
+   ============================================= */
+.md-sidebar--primary .md-sidebar__scrollwrap {
+  scrollbar-width: none;
+}
+
+.md-sidebar--primary .md-sidebar__scrollwrap:hover {
+  scrollbar-width: thin;
+}
+
+.md-sidebar--primary .md-sidebar__scrollwrap::-webkit-scrollbar {
+  width: 0;
+}
+
+.md-sidebar--primary .md-sidebar__scrollwrap:hover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.md-sidebar--primary .md-sidebar__scrollwrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ナビリンクのホバー色(--dracula-cyan/--light-cyan)と揃える */
+[data-md-color-scheme="dracula"] .md-sidebar--primary .md-sidebar__scrollwrap {
+  scrollbar-color: var(--dracula-cyan) transparent;
+}
+
+[data-md-color-scheme="dracula"] .md-sidebar--primary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+  background: var(--dracula-cyan);
+  border-radius: 4px;
+}
+
+[data-md-color-scheme="default"] .md-sidebar--primary .md-sidebar__scrollwrap {
+  scrollbar-color: var(--light-cyan) transparent;
+}
+
+[data-md-color-scheme="default"] .md-sidebar--primary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+  background: var(--light-cyan);
+  border-radius: 4px;
+}
+
+.md-header--shadow {
+  box-shadow: none;
+}
+
+/* repo_urlを設定していないため`.md-header__source`(リポジトリリンク欄)は
+   常に空だが、MkDocs(Material)側はrepo_url未設定ならテンプレート自体が
+   この要素を出力しないのに対し、zensicalは空でも常に出力し、中身が空の
+   まま横幅だけ確保してしまう(検索ボックスが右端まで届かず、右側に
+   使われない余白ができて見える原因)。空のまま常に非表示にする
+   (:emptyは効かない — テンプレートの改行・空白がテキストノードとして
+   残るため、真に子要素が無い場合しかマッチしない)。 */
+.md-header__source {
+  display: none;
+}
+
+.md-main {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.md-content {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+[data-md-color-scheme="dracula"] .md-typeset {
+  color: var(--dracula-foreground);
+}
+
+/* =============================================
+   タブ（tabsレイアウト使用時）
+   ============================================= */
+[data-md-color-scheme="dracula"] .md-tabs {
+  background-color: #242424;
+}
+
+[data-md-color-scheme="dracula"] .md-tabs__link--active {
+  color: var(--dracula-cyan);
+}
+
+
+/* =============================================
+   Table of Contents 削除
+   ============================================= */
+.md-nav--secondary {
+  display: none;
+}
+
+.md-sidebar--secondary:not([hidden]) {
+  display: none;
+}
+
+
+[data-md-color-scheme="dracula"] .md-nav__link::before {
+  content: "● ";
+  color: #b0b0b0;
+}
+
+[data-md-color-scheme="dracula"] .md-nav__link--active::before {
+  content: "● ";
+  color: #b0b0b0;
+}
+
+/* =============================================
+   Light custom カラーパレット定義
+   dracula(dark)と同じ色相を、白背景でも読める濃さに
+   調整して使う
+   ============================================= */
+:root {
+  --light-purple:  #6c4fd6;
+  --light-cyan:    #0e7c86;
+  --light-pink:    #c2185b;
+  --light-green:   #2e7d32;
+  --light-orange:  #c76b00;
+  --light-red:     #c0392b;
+}
+
+/* =============================================
+   Material カスタムカラースキーム: default (light)
+   ============================================= */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:            var(--light-purple);
+  --md-primary-fg-color--light:     #8a72e0;
+  --md-primary-fg-color--dark:      #4d37a0;
+  --md-primary-bg-color:            #4a4a4a;
+  --md-primary-bg-color--light:     #4a4a4acc;
+
+  --md-accent-fg-color:             var(--light-cyan);
+  --md-accent-fg-color--transparent:#0e7c861a;
+  --md-accent-bg-color:             #ffffff;
+
+  /* フッター（本文と同じ背景色にして、ページ下端で色が
+     切り替わって見える継ぎ目が出ないようにする。Material既定は
+     黒地フッターのままなので、地の色に合わせて文字色も明示する） */
+  --md-footer-fg-color:             #555555;
+  --md-footer-fg-color--light:      #555555b3;
+  --md-footer-fg-color--lighter:    #55555580;
+  --md-footer-bg-color:             var(--md-default-bg-color);
+  --md-footer-bg-color--dark:       var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="default"] .md-header {
+  background-color: #ffffff;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+[data-md-color-scheme="default"] .md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: var(--md-default-bg-color);
+  color: #555555;
+}
+
+[data-md-color-scheme="default"] .md-search__form,
+[data-md-color-scheme="default"] .md-search__button {
+  background-color: #f0f0f0;
+  border-radius: 6px;
+}
+
+[data-md-color-scheme="default"] .md-search__form:hover,
+[data-md-color-scheme="default"] .md-search__button:hover {
+  background-color: #e4e4e4;
+}
+
+[data-md-color-scheme="default"] .md-header__title {
+  color: #555555;
+}
+
+[data-md-color-scheme="default"] .md-nav__link--active {
+  color: #26a69a !important;
+  font-weight: 700;
+}
+
+[data-md-color-scheme="default"] .md-nav__link {
+  color: #555555;
+}
+
+[data-md-color-scheme="default"] .md-nav__link:hover,
+[data-md-color-scheme="default"] .md-nav__link:focus {
+  color: var(--light-cyan);
+}
+
+[data-md-color-scheme="default"] .md-typeset a {
+  color: var(--light-cyan);
+}
+
+[data-md-color-scheme="default"] .md-typeset a:hover {
+  color: var(--light-pink);
+}
+
+[data-md-color-scheme="default"] .md-typeset h1,
+[data-md-color-scheme="default"] .md-typeset h2,
+[data-md-color-scheme="default"] .md-typeset h3,
+[data-md-color-scheme="default"] .md-typeset h4 {
+  color: #555555;
+}
+
+[data-md-color-scheme="default"] .md-nav__link::before {
+  content: "● ";
+  color: #555555;
+}
+
+[data-md-color-scheme="default"] .md-nav__link--active::before {
+  content: "● ";
+  color: #555555;
+}
+
+/* =============================================
+   本文中の写真: 地図(mkdocs_map.html.eex)の
+   ポップアップ画像と同じ角丸(6px)を揃える
+   ============================================= */
+.md-typeset img {
+  border-radius: 4px;
+}
+
+/* =============================================
+   フッターのコピーライト部分(.md-footer-meta)を
+   Previous/Nextナビ部分(.md-footer)と同じ背景色に揃える。
+   modern variantでは.md-footerがvar(--md-default-bg-color)、
+   .md-footer-metaがvar(--md-default-fg-color--lightest)と別々の
+   既定値になっており、下段だけ薄いグレーの帯が見えてしまうため。
+   ============================================= */
+.md-footer-meta {
+  background-color: var(--md-default-bg-color);
+}
+
+
+/* =============================================
+   写真ギャラリー(extensions/gallery.pyの/// galleryブロック)。
+   段組み自体はassets/stylesheets/driveway.css(.dw/.dw-panel)が行い、
+   ここではlove_film_photo(Sphinx)のcustom.cssにあった余白・角丸の
+   調整だけを持ってきている。.thumbは上の.md-typeset imgより詳細度を
+   上げないと角丸が4pxで上書きされるため.dwを付けている。
+   ============================================= */
+.dw-panel {
+  padding: 0;
+}
+
+.dw-panel__content {
+  padding: 0;
+}
+
+.dw-panel__content > div {
+  padding: 15px 0 0 15px;
+}
+
+/* display: blockにしないと、インライン画像の下に行の高さ分の隙間
+   (文字のディセンダ用の余白)が入り、縦方向の間隔だけ広くなる。 */
+.dw .thumb {
+  display: block;
+  border-radius: 6px;
+  width: 100%;
+}
+
+/* =============================================
+   GLightbox(写真ギャラリーのスライドショー)のデスクトップ表示の調整。
+   幅768px以下はGLightboxがタイトルを画像に重ねるモバイル表示(下端に
+   グラデーション背景)になるため、どちらも対象外にしている。
+   ============================================= */
+@media (min-width: 769px) {
+  /* 画像下のタイトル欄(フィルム名): 背景色を付けず、小さい文字で中央寄せ。
+     背景はテーマ側でページ背景色(#1a1a1a等)が付いているので透明にする。
+     スライドショーの背景(オーバーレイ)は配色モードに関係なく常に黒なので、
+     文字色も配色モードに関係なく明るいグレーに固定する(テーマの文字色を
+     継承すると、ライトモードで黒地に黒文字になる)。テーマ側の指定は
+     `html .gslide .gslide-title`等の詳細度(0,2,1)なので、先頭にhtmlを
+     付けて詳細度を上回らせている(付けないと中央寄せ以外が効かない)。 */
+  html .glightbox-clean .gslide .gslide-description {
+    background: transparent;
+  }
+
+  html .glightbox-clean .gslide .gdesc-inner {
+    padding: 10px 0 0;
+  }
+
+  html .glightbox-clean .gslide .gslide-title {
+    margin-bottom: 0;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    color: #bbbbbb;
+    text-align: center;
+  }
+
+  /* 上下に余白を付ける。GLightboxは画像にJSでインラインの
+     max-height: calc(100vh - <タイトル欄の高さ>)を付けるため、そのままだと
+     画像+タイトル欄が画面の高さぴったりになり上下の余白が0になる。
+     !importantで上書きし、縮んだ分は.gslideの中央寄せで上下均等の余白になる。
+     28pxは上のタイトル欄(padding-top 10px + line-height 18px)の高さなので、
+     タイトル欄の余白・行の高さを変えたらここも合わせること。ズーム中
+     (.zoomed)は拡大を妨げないよう対象外。 */
+  .glightbox-container .gslide:not(.zoomed) .gslide-image img {
+    max-height: calc(100vh - 28px - 8vh) !important;
+  }
+}
+
+/* 毛虫の定点観測ページ(observing-caterpillars.md)の動画。width="400"の
+   ままだとスマホ幅で本文からはみ出すため、本文幅を上限にする。 */
+.md-typeset .caterpillar-video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* スライドショーの写真にグレーの縁取りを付ける。border-boxにして、縁取りの
+   分もmax-height(上の余白計算)の内側に収め、画面からはみ出さないようにする。 */
+.glightbox-container .gslide-image img {
+  box-sizing: border-box;
+  border: 3px solid #c0c0c0;
+}
+
+/* =============================================
+   画面幅が狭い時のドロワー(引き出し式メニュー)の背景を1色にそろえる。
+   ドロワー本体(.md-sidebar--primary)はzensical(modern)の既定で半透明の
+   背景+ぼかし(--md-default-bg-color--light)だが、上の.md-navと
+   .md-nav__title[for="__drawer"]に不透明な背景色を付けているため、項目の
+   ある部分だけ色が濃く、その下の余白は半透明のグレーという2色に見えていた。
+   ドロワー表示になる幅(76.234375em以下、zensical本体と同じ区切り)でだけ
+   透明にして本体の背景に任せる。modernではサブメニューは重ねて表示せず
+   その場で展開するので、透明にしても下の項目が透けて見えることはない。
+   ============================================= */
+@media screen and (max-width: 76.234375em) {
+  [data-md-color-scheme] .md-nav {
+    background-color: transparent;
+  }
+
+  [data-md-color-scheme] .md-nav--primary .md-nav__title[for="__drawer"] {
+    background-color: transparent;
+  }
+}

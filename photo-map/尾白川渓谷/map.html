@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- ol/d3/c3のバージョンはSRI(integrity属性)のハッシュと対になっているため、
+     更新する際は両方を同時に変更すること(CDN側のファイルが変わると
+     integrityの検証に失敗してリソースの読み込みごと拒否される)。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css" integrity="sha384-Jpg1uvTciFJuHq+90Ly0/2SKRT9yS5OhbIN5FuFoFWji9fc44ok8xxO88CJi8Z5W" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js" integrity="sha384-tXckLaRmTS0tB/MZq9JW8E3Q7SknBYk6p7upTq73sN1UKcD8zwnvi2WykQi1pwAX" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js" integrity="sha384-M06Cb6r/Yrkprjr7ngOrJlzgekrkkdmGZDES/SUnkUpUol0/qjsaQWQfLzq0mcfg" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css" integrity="sha384-9Lyl02xl1c0mLtz2jmyFnSbGH3FddWR0f/1GCnSPOdzy5X0Nf2riz6V3AhDki55K" crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js" integrity="sha384-xOzJ6ocROuPNeY/PUgXyXgiPyvvePCiWVkKXro4Lb1gWoGJOtrJw+zrpf3NBx1B5" crossorigin="anonymous"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけbodyの高さが伸び、それに合わせて
+     iframe自体の高さも下のpostMessage(mkdocs_export.md.eexが受信)で
+     自分で広げる。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  .popup {
+    position: absolute;
+    display: none;
+    background: #EEE;
+    color: #222;
+    border: 2px solid #EEE;
+    border-radius: 4px;
+    padding: 0px;
+    max-width: 320px;
+    transform: translate(-50%, -100%);
+    font-family: sans-serif;
+    font-size: 13px;
+  }
+  /* 歩行アニメーション中、地図の中心に表示する場合(showPopupの
+     positioning引数が"center-center"の時にJS側でこのクラスを付ける)。
+     通常の.popupのtransformはwaypoint直上に吹き出しを出す前提
+     (translate(-50%, -100%))なので、画像自体の中心を座標に合わせるには
+     別のtransformで上書きする必要がある。 */
+  .popup.popup-centered { transform: translate(-50%, -50%); }
+  .popup img { max-width: 300px; max-height: 300px; display: block; margin-bottom: 0px; border-radius: 4px; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<div id="popup" class="popup"></div>
+<!-- データはCSPのscript-srcを緩めずに済むよう非実行のapplication/jsonタグで
+     埋め込み、実処理は外部のmap-viewer.js(エクスポート時にこのファイルと
+     同じディレクトリへコピーされる。MkdocsExport.write_map!/4参照)に
+     分離している。 -->
+<script type="application/json" id="map-data">{"hidden":[],"type":"walking","photos":{"不動滝_4ec4fb87-84a4-4990-a6cd-e92ec1c893c4":[{"image_path":"images\/E0950005.webp"}],"千ヶ淵_1d3b2294-5338-4a53-b548-7c9597d32feb":[{"image_path":"images\/E0940003.webp"}],"百合ヶ淵_f496774c-93c9-4f43-b9d7-07a168e13858":[{"image_path":"images\/E0930011.webp"}],"神蛇滝_65738790-eae8-42b7-bcb1-07b8023854ab":[{"image_path":"images\/E0950002.webp"}],"鼓滝_231e5667-206f-4629-8ad1-926324c31832":[{"image_path":"images\/E0930006.webp"}]},"icons":{"不動滝_4ec4fb87-84a4-4990-a6cd-e92ec1c893c4":"waterfall","千ヶ淵_1d3b2294-5338-4a53-b548-7c9597d32feb":"waterfall","百合ヶ淵_f496774c-93c9-4f43-b9d7-07a168e13858":"waterfall","神蛇滝_65738790-eae8-42b7-bcb1-07b8023854ab":"waterfall","竹宇駒ヶ岳神社_f6e321a5-9889-4a63-8771-6d13a2f2feb9":"shrine","鼓滝_231e5667-206f-4629-8ad1-926324c31832":"waterfall"},"kml":"\u003Ckml xmlns=\"http:\/\/www.opengis.net\/kml\/2.2\" xmlns:gx=\"http:\/\/www.google.com\/kml\/ext\/2.2\" xmlns:xsi=\"http:\/\/www.w3.org\/2001\/XMLSchema-instance\" xsi:schemaLocation=\"http:\/\/www.opengis.net\/kml\/2.2 https:\/\/developers.google.com\/kml\/schema\/kml22gx.xsd\">\u003CDocument>\u003CPlacemark>\u003Cname>尾白川渓谷\u003C\/name>\u003CstyleUrl>http:\/\/localhost:5000\/?k=2UKB5TZK7FANL2BEEPPXI4NDI7EIITS5JFQLFIYBOBLF2SJBI3BQ#trackStyle\u003C\/styleUrl>\u003CStyle>\u003CLineStyle>\u003Ccolor>ffff6712\u003C\/color>\u003Cwidth>3\u003C\/width>\u003C\/LineStyle>\u003C\/Style>\u003CLineString>\u003Ccoordinates>138.298101,35.797292,785 138.298024,35.797342,787.5 138.29799,35.797308,787.5 138.2978,35.796987,784.8 138.297559,35.796545,782 138.297473,35.796425,781.5 138.297407,35.796356,784 138.297172,35.79604,786.8 138.296959,35.795676,789 138.296914,35.795628,788.8 138.296804,35.795442,787.5 138.296536,35.795044,780.8 138.296429,35.794944,780 138.296339,35.794888,780 138.296139,35.794831,781 138.295643,35.794741,782 138.295483,35.794698,782 138.295384,35.794713,782 138.295269,35.794762,783 138.295085,35.794827,782.5 138.294799,35.795051,786.5 138.294761,35.795068,787.8 138.294694,35.795068,789 138.294623,35.79506,787.5 138.294641,35.795025,786 138.294535,35.795051,788 138.294411,35.794981,784.8 138.294103,35.794785,793.5 138.294022,35.794737,798 138.293822,35.794693,804.5 138.29364,35.794848,801.8 138.293556,35.794883,803 138.293333,35.794936,803.8 138.292885,35.794944,820.5 138.292567,35.794999,829.5 138.292387,35.795085,836 138.29194,35.795571,844 138.291843,35.795563,845 138.291844,35.795568,845 138.291844,35.795563,845 138.291667,35.795365,847.8 138.291673,35.795236,848.8 138.291339,35.7949,862.8 138.291183,35.794762,872.5 138.291073,35.794748,874.8 138.290753,35.794861,874 138.2906,35.795088,867.5 138.29044,35.79505,867.5 138.290223,35.7949,870.5 138.290006,35.794788,875 138.289644,35.794804,875.8 138.28924,35.794873,876 138.288732,35.794997,878 138.28864,35.795127,880.5 138.288533,35.795196,882.5 138.28829,35.795145,885.5 138.288188,35.795089,890.5 138.288025,35.795089,899 138.287518,35.795574,901.5 138.287325,35.795725,903.5 138.287236,35.795716,909 138.287173,35.795568,917 138.287227,35.795426,918.8 138.287203,35.795325,924 138.287132,35.795225,930 138.286918,35.795255,935.5 138.286929,35.795122,940 138.286721,35.794966,950.8 138.286465,35.794863,964.5 138.286012,35.794803,980.8 138.285569,35.794853,985.8 138.285545,35.794854,987 138.285546,35.794857,986 138.285545,35.794854,987 138.285196,35.794882,989.5 138.284743,35.795027,986 138.283764,35.795425,984.8 138.283456,35.795519,985 138.28307,35.795504,999.5 138.283055,35.795788,998 138.283071,35.795504,999.5 138.283064,35.795504,1001 138.283045,35.795375,1003 138.283249,35.795295,993.5 138.283448,35.795171,992 138.283606,35.795001,994 138.28383,35.794738,1001.8 138.284109,35.794714,1003 138.284248,35.794581,1009.5 138.284296,35.794462,1016.5 138.284303,35.794053,1039.8 138.284172,35.793956,1042.5 138.283928,35.793866,1043 138.283765,35.793753,1043.5 138.283722,35.793713,1045 138.283115,35.794154,1023 138.283722,35.793714,1045 138.283299,35.793325,1048 138.282949,35.79303,1064.8 138.282741,35.792926,1071 138.282552,35.79267,1087 138.282455,35.792597,1093 138.282304,35.792526,1101.5 138.282104,35.792537,1107 138.281899,35.79258,1110 138.281671,35.792648,1111.8 138.281478,35.792835,1108 138.281221,35.792966,1106.8 138.281035,35.793019,1110 138.280774,35.793055,1114 138.280434,35.793041,1117 138.280238,35.79292,1128 138.280043,35.792845,1134.5 138.279581,35.792846,1141.8 138.27907,35.793005,1139 138.278866,35.793022,1140.8 138.278672,35.793063,1142 138.278495,35.793348,1124 138.278412,35.793453,1117.8 138.278322,35.793514,1114.8 138.278126,35.793514,1115.5 138.277922,35.793392,1121.8 138.277461,35.793169,1134 138.277157,35.792961,1137.8 138.277064,35.79273,1150 138.27691,35.792658,1148 138.276722,35.792621,1140.8 138.276431,35.792422,1139 138.2763,35.792303,1137 138.276123,35.792048,1137 138.275971,35.791975,1132.8 138.275775,35.792092,1127 138.275616,35.792174,1127 138.275528,35.792205,1126.8 138.275225,35.792311,1130 138.274625,35.791937,1150 138.274854,35.792428,1136.8 138.275227,35.792313,1129.5 138.275616,35.792174,1127 138.275775,35.792092,1127 138.275971,35.791975,1132.8 138.276123,35.792048,1137 138.2763,35.792303,1137 138.276431,35.792422,1139 138.276722,35.792621,1140.8 138.27691,35.792658,1148 138.277064,35.79273,1150 138.277157,35.792961,1137.8 138.277461,35.793169,1134 138.277922,35.793392,1121.8 138.278126,35.793514,1115.5 138.278322,35.793514,1114.8 138.278412,35.793453,1117.8 138.278495,35.793348,1124 138.278672,35.793063,1142 138.278866,35.793022,1140.8 138.27907,35.793005,1139 138.279581,35.792846,1141.8 138.280043,35.792845,1134.5 138.280238,35.79292,1128 138.280434,35.793041,1117 138.280774,35.793055,1114 138.281035,35.793019,1110 138.281221,35.792966,1106.8 138.281478,35.792835,1108 138.281671,35.792648,1111.8 138.281899,35.79258,1110 138.282104,35.792537,1107 138.282304,35.792526,1101.5 138.282455,35.792597,1093 138.282552,35.79267,1087 138.282741,35.792926,1071 138.282949,35.79303,1064.8 138.283299,35.793325,1048 138.283765,35.793753,1043.5 138.283928,35.793866,1043 138.284172,35.793956,1042.5 138.284303,35.794053,1039.8 138.284381,35.794214,1033 138.284296,35.794462,1016.5 138.284052,35.794738,1002 138.28357,35.7951,992 138.283114,35.795346,1000 138.283143,35.79552,996 138.283588,35.795496,985 138.28498,35.794971,987 138.285628,35.794844,986 138.285963,35.794813,982 138.28623,35.794825,974 138.286228,35.794831,974 138.286465,35.794863,964.5 138.286721,35.794966,950.8 138.286929,35.795122,940 138.286918,35.795255,935.5 138.287132,35.795225,930 138.287203,35.795325,924 138.287227,35.795426,918.8 138.287173,35.795568,917 138.287236,35.795716,909 138.287325,35.795725,903.5 138.287518,35.795574,901.5 138.288025,35.795089,899 138.288188,35.795089,890.5 138.28829,35.795145,885.5 138.288533,35.795196,882.5 138.28864,35.795127,880.5 138.288732,35.794997,878 138.28924,35.794873,876 138.289644,35.794804,875.8 138.290006,35.794788,875 138.290223,35.7949,870.5 138.29044,35.79505,867.5 138.2906,35.795088,867.5 138.290753,35.794861,874 138.291073,35.794748,874.8 138.291183,35.794762,872.5 138.291339,35.7949,862.8 138.291673,35.795236,848.8 138.291667,35.795365,847.8 138.29172,35.795473,847 138.291789,35.795559,846 138.29194,35.795571,844 138.292387,35.795085,836 138.292567,35.794999,829.5 138.292885,35.794944,820.5 138.292925,35.794943,820 138.292924,35.794904,822 138.293357,35.794901,806 138.293554,35.794868,803 138.293822,35.794693,804.5 138.294022,35.794737,798 138.294103,35.794785,793.5 138.294411,35.794981,784.8 138.294535,35.795051,788 138.294694,35.795068,789 138.294761,35.795068,787.8 138.294799,35.795051,786.5 138.295085,35.794827,782.5 138.295269,35.794762,783 138.295384,35.794713,782 138.295483,35.794698,782 138.295643,35.794741,782 138.296139,35.794831,781 138.296339,35.794888,780 138.296429,35.794944,780 138.296536,35.795044,780.8 138.296804,35.795442,787.5 138.296914,35.795628,788.8 138.296959,35.795676,789 138.297172,35.79604,786.8 138.297407,35.796356,784 138.297473,35.796425,781.5 138.297559,35.796545,782 138.2978,35.796987,784.8 138.29799,35.797308,787.5 138.298108,35.797426,787.5 138.298138,35.797443,788 138.298201,35.797372,785\u003C\/coordinates>\u003C\/LineString>\u003C\/Placemark>\u003CPlacemark id=\"f6e321a5-9889-4a63-8771-6d13a2f2feb9\">\u003Cname>竹宇駒ヶ岳神社_f6e321a5-9889-4a63-8771-6d13a2f2feb9\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/shrine.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>shrine\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.294624,35.795064\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"1d3b2294-5338-4a53-b548-7c9597d32feb\">\u003Cname>千ヶ淵_1d3b2294-5338-4a53-b548-7c9597d32feb\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/waterfall.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>waterfall\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.291715,35.795968\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"231e5667-206f-4629-8ad1-926324c31832\">\u003Cname>鼓滝_231e5667-206f-4629-8ad1-926324c31832\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/waterfall.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>waterfall\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.285439,35.795362\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"f496774c-93c9-4f43-b9d7-07a168e13858\">\u003Cname>百合ヶ淵_f496774c-93c9-4f43-b9d7-07a168e13858\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/waterfall.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>waterfall\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.283055,35.795788\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"65738790-eae8-42b7-bcb1-07b8023854ab\">\u003Cname>神蛇滝_65738790-eae8-42b7-bcb1-07b8023854ab\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/waterfall.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>waterfall\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.283115,35.794154\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"4ec4fb87-84a4-4990-a6cd-e92ec1c893c4\">\u003Cname>不動滝_4ec4fb87-84a4-4990-a6cd-e92ec1c893c4\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/waterfall.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>waterfall\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.274528,35.791924\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003C\/Document>\u003C\/kml>"}</script>
+<script src="track-type-style.js?v=5e068b104233"></script>
+<script src="map-viewer.js?v=418b8af02777"></script>
+</body>
+</html>

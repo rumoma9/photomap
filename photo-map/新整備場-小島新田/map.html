@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10/ol.css">
+<script src="https://cdn.jsdelivr.net/npm/ol@10/dist/ol.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけiframe全体(高さ)を広げて確保する
+     (mkdocs_export.md.eexのiframe heightと合わせている)。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  .popup {
+    position: absolute;
+    display: none;
+    background: #fff;
+    color: #222;
+    border: 1px solid #888;
+    border-radius: 4px;
+    padding: 8px;
+    max-width: 140px;
+    transform: translate(-50%, -100%);
+    font-family: sans-serif;
+    font-size: 13px;
+  }
+  .popup img { max-width: 120px; max-height: 120px; display: block; margin-bottom: 4px; border-radius: 4px; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<div id="popup" class="popup"></div>
+<script>
+  const kmlText = "<kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:gx=\"http://www.google.com/kml/ext/2.2\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://www.opengis.net/kml/2.2 https://developers.google.com/kml/schema/kml22gx.xsd\"><Document><Placemark><name>新整備場駅</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.786896,35.542756,0</coordinates></Point></Placemark><Placemark><name>JALスカイミュージアム</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.789209,35.542123,0</coordinates></Point></Placemark><Placemark><name>羽田空港 第1ターミナル展望デッキ</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.783526,35.549163,0</coordinates></Point></Placemark><Placemark><name>羽田空港 第2ターミナル展望デッキ</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.789336,35.550592,0</coordinates></Point></Placemark><Placemark><name>羽田空港 第3ターミナル展望デッキ</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.769927,35.545448,0</coordinates></Point></Placemark><Placemark><name>多摩川スカイブリッジ</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.761984,35.54212,0</coordinates></Point></Placemark><Placemark><name>いつくしま跨線橋</name><visibility>1</visibility><Style><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/pal4/icon38.png</href><gx:w>32</gx:w><gx:h>32</gx:h></Icon></IconStyle><LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle></Style><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>139.748856,35.534713,0</coordinates></Point></Placemark><Folder><Placemark><name>新整備場-小島新田</name><gx:Track><when>2023-11-18T03:51:15.000Z</when><when>2023-11-18T03:51:21.000Z</when><when>2023-11-18T03:51:26.000Z</when><when>2023-11-18T03:51:31.000Z</when><when>2023-11-18T03:51:51.000Z</when><when>2023-11-18T03:51:56.000Z</when><when>2023-11-18T03:52:01.000Z</when><when>2023-11-18T03:52:11.000Z</when><when>2023-11-18T03:52:16.000Z</when><when>2023-11-18T03:52:21.000Z</when><when>2023-11-18T03:52:26.000Z</when><when>2023-11-18T03:52:31.000Z</when><when>2023-11-18T03:52:36.000Z</when><when>2023-11-18T03:52:41.000Z</when><when>2023-11-18T03:52:51.000Z</when><when>2023-11-18T03:52:56.000Z</when><when>2023-11-18T03:53:01.000Z</when><when>2023-11-18T03:53:06.000Z</when><when>2023-11-18T03:53:16.000Z</when><when>2023-11-18T03:53:21.000Z</when><when>2023-11-18T03:53:31.000Z</when><when>2023-11-18T03:53:36.000Z</when><when>2023-11-18T03:53:41.000Z</when><when>2023-11-18T03:53:46.000Z</when><when>2023-11-18T03:53:56.000Z</when><when>2023-11-18T03:54:01.000Z</when><when>2023-11-18T03:54:11.000Z</when><when>2023-11-18T03:54:16.000Z</when><when>2023-11-18T03:54:26.000Z</when><when>2023-11-18T03:54:31.000Z</when><when>2023-11-18T03:54:36.000Z</when><when>2023-11-18T03:54:41.000Z</when><when>2023-11-18T03:54:46.000Z</when><when>2023-11-18T03:54:56.000Z</when><when>2023-11-18T03:55:01.000Z</when><when>2023-11-18T03:55:06.000Z</when><when>2023-11-18T03:55:46.000Z</when><when>2023-11-18T03:55:51.000Z</when><when>2023-11-18T03:55:59.000Z</when><when>2023-11-18T03:56:05.000Z</when><when>2023-11-18T03:56:15.000Z</when><when>2023-11-18T03:56:20.000Z</when><when>2023-11-18T03:56:27.000Z</when><when>2023-11-18T03:56:32.000Z</when><when>2023-11-18T03:56:39.000Z</when><when>2023-11-18T03:59:33.000Z</when><when>2023-11-18T03:59:38.000Z</when><when>2023-11-18T03:59:47.000Z</when><when>2023-11-18T03:59:52.000Z</when><when>2023-11-18T04:00:02.000Z</when><when>2023-11-18T04:00:07.000Z</when><when>2023-11-18T04:00:22.000Z</when><when>2023-11-18T04:00:27.000Z</when><when>2023-11-18T04:00:32.000Z</when><when>2023-11-18T04:00:42.000Z</when><when>2023-11-18T04:00:56.000Z</when><when>2023-11-18T04:01:01.000Z</when><when>2023-11-18T04:01:06.000Z</when><when>2023-11-18T04:01:11.000Z</when><when>2023-11-18T04:02:28.000Z</when><when>2023-11-18T04:02:33.000Z</when><when>2023-11-18T04:02:38.000Z</when><when>2023-11-18T04:02:43.000Z</when><when>2023-11-18T04:02:48.000Z</when><when>2023-11-18T04:03:00.000Z</when><when>2023-11-18T04:03:05.000Z</when><when>2023-11-18T04:03:10.000Z</when><when>2023-11-18T04:03:46.000Z</when><when>2023-11-18T04:03:51.000Z</when><when>2023-11-18T04:03:56.000Z</when><when>2023-11-18T04:04:01.000Z</when><when>2023-11-18T04:04:11.000Z</when><when>2023-11-18T04:04:16.000Z</when><when>2023-11-18T04:04:27.000Z</when><when>2023-11-18T04:04:32.000Z</when><when>2023-11-18T04:04:37.000Z</when><when>2023-11-18T04:04:42.000Z</when><when>2023-11-18T04:04:47.000Z</when><when>2023-11-18T04:04:52.000Z</when><when>2023-11-18T04:05:02.000Z</when><when>2023-11-18T04:05:22.000Z</when><when>2023-11-18T04:05:27.000Z</when><when>2023-11-18T04:05:32.000Z</when><when>2023-11-18T04:05:47.000Z</when><when>2023-11-18T04:06:02.000Z</when><when>2023-11-18T04:06:07.000Z</when><when>2023-11-18T04:06:12.000Z</when><when>2023-11-18T04:06:17.000Z</when><when>2023-11-18T04:06:22.000Z</when><when>2023-11-18T04:06:27.000Z</when><when>2023-11-18T04:06:32.000Z</when><when>2023-11-18T04:06:42.000Z</when><when>2023-11-18T04:06:47.000Z</when><when>2023-11-18T04:07:02.000Z</when><when>2023-11-18T04:07:17.000Z</when><when>2023-11-18T04:07:32.000Z</when><when>2023-11-18T04:07:57.000Z</when><when>2023-11-18T04:08:32.000Z</when><when>2023-11-18T04:08:52.000Z</when><when>2023-11-18T04:09:22.000Z</when><when>2023-11-18T04:10:17.000Z</when><when>2023-11-18T04:10:32.000Z</when><when>2023-11-18T04:10:47.000Z</when><when>2023-11-18T04:10:57.000Z</when><when>2023-11-18T04:11:02.000Z</when><when>2023-11-18T04:11:12.000Z</when><when>2023-11-18T04:11:37.000Z</when><when>2023-11-18T04:11:47.000Z</when><when>2023-11-18T04:11:57.000Z</when><when>2023-11-18T04:12:07.000Z</when><when>2023-11-18T04:12:12.000Z</when><when>2023-11-18T04:12:22.000Z</when><when>2023-11-18T04:12:47.000Z</when><when>2023-11-18T04:12:57.000Z</when><when>2023-11-18T04:13:27.000Z</when><when>2023-11-18T04:13:37.000Z</when><when>2023-11-18T04:13:47.000Z</when><when>2023-11-18T04:14:47.000Z</when><when>2023-11-18T04:14:52.000Z</when><when>2023-11-18T04:14:57.000Z</when><when>2023-11-18T04:16:27.000Z</when><when>2023-11-18T04:16:42.000Z</when><when>2023-11-18T04:17:32.000Z</when><when>2023-11-18T04:17:47.000Z</when><when>2023-11-18T04:17:52.000Z</when><when>2023-11-18T04:17:57.000Z</when><when>2023-11-18T04:18:27.000Z</when><when>2023-11-18T04:18:37.000Z</when><when>2023-11-18T04:18:47.000Z</when><when>2023-11-18T04:20:38.000Z</when><when>2023-11-18T04:20:45.000Z</when><when>2023-11-18T04:20:55.000Z</when><when>2023-11-18T04:21:00.000Z</when><when>2023-11-18T04:21:10.000Z</when><when>2023-11-18T04:21:15.000Z</when><when>2023-11-18T04:21:20.000Z</when><when>2023-11-18T04:21:25.000Z</when><when>2023-11-18T04:21:30.000Z</when><when>2023-11-18T04:21:40.000Z</when><when>2023-11-18T04:21:45.000Z</when><when>2023-11-18T04:21:51.000Z</when><when>2023-11-18T04:22:01.000Z</when><when>2023-11-18T04:22:11.000Z</when><when>2023-11-18T04:22:16.000Z</when><when>2023-11-18T04:23:50.000Z</when><when>2023-11-18T04:23:55.000Z</when><when>2023-11-18T04:24:00.000Z</when><when>2023-11-18T04:24:45.000Z</when><when>2023-11-18T04:24:50.000Z</when><when>2023-11-18T04:25:07.000Z</when><when>2023-11-18T04:25:16.000Z</when><when>2023-11-18T04:25:26.000Z</when><when>2023-11-18T04:25:36.000Z</when><when>2023-11-18T04:25:41.000Z</when><when>2023-11-18T04:25:46.000Z</when><when>2023-11-18T04:25:51.000Z</when><when>2023-11-18T04:25:59.000Z</when><when>2023-11-18T04:26:15.000Z</when><when>2023-11-18T04:26:43.000Z</when><when>2023-11-18T04:26:49.000Z</when><when>2023-11-18T04:27:05.000Z</when><when>2023-11-18T04:27:15.000Z</when><when>2023-11-18T04:27:25.000Z</when><when>2023-11-18T04:27:40.000Z</when><when>2023-11-18T04:27:45.000Z</when><when>2023-11-18T04:27:59.000Z</when><when>2023-11-18T04:28:22.000Z</when><when>2023-11-18T04:28:27.000Z</when><when>2023-11-18T04:28:47.000Z</when><when>2023-11-18T04:28:58.000Z</when><when>2023-11-18T04:29:12.000Z</when><when>2023-11-18T04:29:22.000Z</when><when>2023-11-18T04:29:27.000Z</when><when>2023-11-18T04:29:38.000Z</when><when>2023-11-18T04:29:43.000Z</when><when>2023-11-18T04:29:48.000Z</when><when>2023-11-18T04:29:53.000Z</when><when>2023-11-18T04:30:03.000Z</when><when>2023-11-18T04:30:08.000Z</when><when>2023-11-18T04:30:19.000Z</when><when>2023-11-18T04:30:30.000Z</when><when>2023-11-18T04:48:28.000Z</when><when>2023-11-18T04:48:33.000Z</when><when>2023-11-18T04:51:57.000Z</when><when>2023-11-18T04:52:07.000Z</when><when>2023-11-18T04:52:18.000Z</when><when>2023-11-18T04:52:23.000Z</when><when>2023-11-18T04:52:39.000Z</when><when>2023-11-18T04:52:49.000Z</when><when>2023-11-18T04:53:00.000Z</when><when>2023-11-18T04:53:05.000Z</when><when>2023-11-18T04:53:30.000Z</when><when>2023-11-18T04:53:35.000Z</when><when>2023-11-18T04:53:40.000Z</when><when>2023-11-18T04:53:50.000Z</when><when>2023-11-18T04:53:56.000Z</when><when>2023-11-18T04:54:08.000Z</when><when>2023-11-18T04:54:27.000Z</when><when>2023-11-18T04:54:32.000Z</when><when>2023-11-18T04:54:37.000Z</when><when>2023-11-18T04:54:47.000Z</when><when>2023-11-18T04:55:03.000Z</when><when>2023-11-18T04:55:15.000Z</when><when>2023-11-18T04:55:20.000Z</when><when>2023-11-18T05:02:54.000Z</when><when>2023-11-18T05:02:59.000Z</when><when>2023-11-18T05:07:21.000Z</when><when>2023-11-18T05:07:26.000Z</when><when>2023-11-18T05:07:31.000Z</when><when>2023-11-18T05:07:36.000Z</when><when>2023-11-18T05:08:06.000Z</when><when>2023-11-18T05:08:56.000Z</when><when>2023-11-18T05:09:06.000Z</when><when>2023-11-18T05:10:21.000Z</when><when>2023-11-18T05:12:11.000Z</when><when>2023-11-18T05:12:26.000Z</when><when>2023-11-18T05:13:16.000Z</when><when>2023-11-18T05:13:31.000Z</when><when>2023-11-18T05:13:41.000Z</when><when>2023-11-18T05:13:51.000Z</when><when>2023-11-18T05:15:56.000Z</when><when>2023-11-18T05:16:47.000Z</when><when>2023-11-18T05:16:57.000Z</when><when>2023-11-18T05:17:27.000Z</when><when>2023-11-18T05:17:42.000Z</when><when>2023-11-18T05:19:22.000Z</when><when>2023-11-18T05:19:57.000Z</when><when>2023-11-18T05:22:42.000Z</when><when>2023-11-18T05:22:57.000Z</when><when>2023-11-18T05:23:07.000Z</when><when>2023-11-18T05:23:52.000Z</when><when>2023-11-18T05:24:22.000Z</when><when>2023-11-18T05:24:47.000Z</when><when>2023-11-18T05:25:02.000Z</when><when>2023-11-18T05:27:27.000Z</when><when>2023-11-18T05:27:42.000Z</when><when>2023-11-18T05:28:12.000Z</when><when>2023-11-18T05:32:08.000Z</when><when>2023-11-18T05:32:43.000Z</when><when>2023-11-18T05:32:58.000Z</when><when>2023-11-18T05:33:18.000Z</when><when>2023-11-18T05:33:43.000Z</when><when>2023-11-18T05:35:08.000Z</when><when>2023-11-18T05:35:33.000Z</when><when>2023-11-18T05:36:08.000Z</when><when>2023-11-18T05:36:43.000Z</when><when>2023-11-18T05:37:03.000Z</when><when>2023-11-18T05:37:35.000Z</when><when>2023-11-18T05:37:40.000Z</when><when>2023-11-18T05:37:55.000Z</when><when>2023-11-18T05:38:07.000Z</when><when>2023-11-18T05:55:02.000Z</when><when>2023-11-18T05:55:07.000Z</when><when>2023-11-18T05:55:12.000Z</when><when>2023-11-18T05:55:17.000Z</when><when>2023-11-18T05:55:27.000Z</when><when>2023-11-18T05:55:32.000Z</when><when>2023-11-18T05:55:37.000Z</when><when>2023-11-18T05:55:47.000Z</when><when>2023-11-18T05:55:52.000Z</when><when>2023-11-18T05:56:42.000Z</when><when>2023-11-18T05:56:59.000Z</when><when>2023-11-18T05:57:09.000Z</when><when>2023-11-18T05:57:29.000Z</when><when>2023-11-18T05:57:34.000Z</when><when>2023-11-18T05:57:42.000Z</when><when>2023-11-18T05:57:47.000Z</when><when>2023-11-18T05:57:55.000Z</when><when>2023-11-18T05:58:05.000Z</when><when>2023-11-18T05:58:10.000Z</when><when>2023-11-18T05:58:15.000Z</when><when>2023-11-18T05:58:20.000Z</when><when>2023-11-18T05:58:25.000Z</when><when>2023-11-18T05:58:30.000Z</when><when>2023-11-18T05:58:35.000Z</when><when>2023-11-18T05:58:40.000Z</when><when>2023-11-18T05:58:45.000Z</when><when>2023-11-18T05:58:50.000Z</when><when>2023-11-18T05:58:55.000Z</when><when>2023-11-18T05:59:00.000Z</when><when>2023-11-18T05:59:05.000Z</when><when>2023-11-18T05:59:10.000Z</when><when>2023-11-18T05:59:27.000Z</when><when>2023-11-18T05:59:38.000Z</when><when>2023-11-18T05:59:48.000Z</when><when>2023-11-18T05:59:55.000Z</when><when>2023-11-18T06:00:00.000Z</when><when>2023-11-18T06:00:05.000Z</when><when>2023-11-18T06:00:57.000Z</when><when>2023-11-18T06:01:02.000Z</when><when>2023-11-18T06:01:07.000Z</when><when>2023-11-18T06:01:17.000Z</when><when>2023-11-18T06:01:27.000Z</when><when>2023-11-18T06:01:32.000Z</when><when>2023-11-18T06:01:37.000Z</when><when>2023-11-18T06:01:42.000Z</when><when>2023-11-18T06:01:47.000Z</when><when>2023-11-18T06:01:57.000Z</when><when>2023-11-18T06:02:02.000Z</when><when>2023-11-18T06:02:08.000Z</when><when>2023-11-18T06:02:13.000Z</when><when>2023-11-18T06:02:18.000Z</when><when>2023-11-18T06:02:33.000Z</when><when>2023-11-18T06:02:38.000Z</when><when>2023-11-18T06:02:43.000Z</when><when>2023-11-18T06:02:48.000Z</when><when>2023-11-18T06:02:53.000Z</when><when>2023-11-18T06:02:58.000Z</when><when>2023-11-18T06:04:04.000Z</when><when>2023-11-18T06:04:09.000Z</when><when>2023-11-18T06:04:14.000Z</when><when>2023-11-18T06:04:19.000Z</when><when>2023-11-18T06:04:24.000Z</when><when>2023-11-18T06:04:29.000Z</when><when>2023-11-18T06:04:34.000Z</when><when>2023-11-18T06:04:39.000Z</when><when>2023-11-18T06:04:44.000Z</when><when>2023-11-18T06:04:49.000Z</when><when>2023-11-18T06:04:54.000Z</when><when>2023-11-18T06:05:14.000Z</when><when>2023-11-18T06:05:24.000Z</when><when>2023-11-18T06:05:29.000Z</when><when>2023-11-18T06:05:34.000Z</when><when>2023-11-18T06:05:53.000Z</when><when>2023-11-18T06:06:03.000Z</when><when>2023-11-18T06:06:13.000Z</when><when>2023-11-18T06:06:28.000Z</when><when>2023-11-18T06:06:33.000Z</when><when>2023-11-18T06:06:43.000Z</when><when>2023-11-18T06:07:22.000Z</when><when>2023-11-18T06:07:35.000Z</when><when>2023-11-18T06:07:40.000Z</when><when>2023-11-18T06:07:45.000Z</when><when>2023-11-18T06:07:50.000Z</when><when>2023-11-18T06:07:55.000Z</when><when>2023-11-18T06:08:00.000Z</when><when>2023-11-18T06:08:10.000Z</when><when>2023-11-18T06:08:16.000Z</when><when>2023-11-18T06:08:38.000Z</when><when>2023-11-18T06:08:59.000Z</when><when>2023-11-18T06:09:09.000Z</when><when>2023-11-18T06:09:14.000Z</when><when>2023-11-18T06:09:24.000Z</when><when>2023-11-18T06:09:34.000Z</when><when>2023-11-18T06:11:05.000Z</when><when>2023-11-18T06:11:10.000Z</when><when>2023-11-18T06:11:25.000Z</when><when>2023-11-18T06:11:45.000Z</when><when>2023-11-18T06:12:00.000Z</when><when>2023-11-18T06:12:05.000Z</when><when>2023-11-18T06:12:20.000Z</when><when>2023-11-18T06:12:25.000Z</when><when>2023-11-18T06:12:35.000Z</when><when>2023-11-18T06:12:40.000Z</when><when>2023-11-18T06:13:35.000Z</when><when>2023-11-18T06:13:50.000Z</when><when>2023-11-18T06:14:05.000Z</when><when>2023-11-18T06:14:30.000Z</when><when>2023-11-18T06:14:45.000Z</when><when>2023-11-18T06:14:50.000Z</when><when>2023-11-18T06:14:55.000Z</when><when>2023-11-18T06:15:05.000Z</when><when>2023-11-18T06:15:25.000Z</when><when>2023-11-18T06:15:35.000Z</when><when>2023-11-18T06:15:40.000Z</when><when>2023-11-18T06:15:50.000Z</when><when>2023-11-18T06:16:10.000Z</when><when>2023-11-18T06:17:05.000Z</when><when>2023-11-18T06:17:25.000Z</when><when>2023-11-18T06:17:40.000Z</when><when>2023-11-18T06:18:00.000Z</when><when>2023-11-18T06:18:15.000Z</when><when>2023-11-18T06:18:45.000Z</when><when>2023-11-18T06:19:00.000Z</when><when>2023-11-18T06:20:00.000Z</when><when>2023-11-18T06:20:05.000Z</when><when>2023-11-18T06:20:10.000Z</when><when>2023-11-18T06:20:15.000Z</when><when>2023-11-18T06:20:20.000Z</when><when>2023-11-18T06:29:21.000Z</when><when>2023-11-18T06:29:26.000Z</when><when>2023-11-18T06:29:42.000Z</when><when>2023-11-18T06:30:12.000Z</when><when>2023-11-18T06:30:58.000Z</when><when>2023-11-18T06:31:50.000Z</when><when>2023-11-18T06:31:55.000Z</when><when>2023-11-18T06:32:00.000Z</when><when>2023-11-18T06:32:11.000Z</when><when>2023-11-18T06:32:24.000Z</when><when>2023-11-18T06:32:35.000Z</when><when>2023-11-18T06:32:47.000Z</when><when>2023-11-18T06:32:53.000Z</when><when>2023-11-18T06:32:58.000Z</when><when>2023-11-18T06:33:17.000Z</when><when>2023-11-18T06:33:23.000Z</when><when>2023-11-18T06:33:38.000Z</when><when>2023-11-18T06:45:19.000Z</when><when>2023-11-18T06:45:24.000Z</when><when>2023-11-18T06:45:29.000Z</when><when>2023-11-18T06:45:39.000Z</when><when>2023-11-18T06:45:44.000Z</when><when>2023-11-18T06:45:54.000Z</when><when>2023-11-18T06:46:02.000Z</when><when>2023-11-18T06:46:07.000Z</when><when>2023-11-18T06:46:22.000Z</when><when>2023-11-18T06:46:27.000Z</when><when>2023-11-18T06:46:32.000Z</when><when>2023-11-18T06:46:51.000Z</when><when>2023-11-18T06:50:14.000Z</when><when>2023-11-18T06:50:19.000Z</when><when>2023-11-18T06:50:29.000Z</when><when>2023-11-18T06:50:47.000Z</when><when>2023-11-18T06:50:52.000Z</when><when>2023-11-18T06:51:22.000Z</when><when>2023-11-18T06:51:40.000Z</when><when>2023-11-18T06:51:47.000Z</when><when>2023-11-18T06:52:02.000Z</when><when>2023-11-18T06:52:37.000Z</when><when>2023-11-18T06:52:42.000Z</when><when>2023-11-18T06:53:12.000Z</when><when>2023-11-18T06:53:32.000Z</when><when>2023-11-18T06:53:47.000Z</when><when>2023-11-18T06:54:07.000Z</when><when>2023-11-18T06:54:22.000Z</when><when>2023-11-18T06:54:27.000Z</when><when>2023-11-18T06:54:37.000Z</when><when>2023-11-18T06:54:52.000Z</when><when>2023-11-18T06:55:07.000Z</when><when>2023-11-18T06:55:22.000Z</when><when>2023-11-18T06:55:37.000Z</when><when>2023-11-18T06:55:42.000Z</when><when>2023-11-18T06:55:57.000Z</when><when>2023-11-18T06:56:02.000Z</when><when>2023-11-18T06:56:27.000Z</when><when>2023-11-18T06:56:42.000Z</when><when>2023-11-18T06:56:52.000Z</when><when>2023-11-18T06:57:07.000Z</when><when>2023-11-18T06:57:17.000Z</when><when>2023-11-18T07:00:42.000Z</when><when>2023-11-18T07:00:52.000Z</when><when>2023-11-18T07:01:07.000Z</when><when>2023-11-18T07:01:17.000Z</when><when>2023-11-18T07:01:32.000Z</when><when>2023-11-18T07:01:52.000Z</when><when>2023-11-18T07:02:37.000Z</when><when>2023-11-18T07:02:42.000Z</when><when>2023-11-18T07:03:07.000Z</when><when>2023-11-18T07:03:17.000Z</when><when>2023-11-18T07:03:42.000Z</when><when>2023-11-18T07:04:12.000Z</when><when>2023-11-18T07:04:42.000Z</when><when>2023-11-18T07:04:47.000Z</when><when>2023-11-18T07:05:32.000Z</when><when>2023-11-18T07:06:12.000Z</when><when>2023-11-18T07:06:17.000Z</when><when>2023-11-18T07:06:47.000Z</when><when>2023-11-18T07:08:07.000Z</when><when>2023-11-18T07:08:52.000Z</when><when>2023-11-18T07:09:27.000Z</when><when>2023-11-18T07:09:47.000Z</when><when>2023-11-18T07:11:17.000Z</when><when>2023-11-18T07:12:02.000Z</when><when>2023-11-18T07:12:07.000Z</when><when>2023-11-18T07:12:22.000Z</when><when>2023-11-18T07:12:38.000Z</when><when>2023-11-18T07:12:53.000Z</when><when>2023-11-18T07:14:18.000Z</when><when>2023-11-18T07:14:33.000Z</when><when>2023-11-18T07:15:28.000Z</when><when>2023-11-18T07:16:23.000Z</when><when>2023-11-18T07:16:58.000Z</when><when>2023-11-18T07:17:53.000Z</when><when>2023-11-18T07:18:08.000Z</when><when>2023-11-18T07:18:18.000Z</when><when>2023-11-18T07:18:28.000Z</when><when>2023-11-18T07:18:53.000Z</when><when>2023-11-18T07:19:03.000Z</when><when>2023-11-18T07:19:18.000Z</when><when>2023-11-18T07:19:48.000Z</when><when>2023-11-18T07:19:58.000Z</when><when>2023-11-18T07:20:03.000Z</when><when>2023-11-18T07:20:18.000Z</when><when>2023-11-18T07:20:23.000Z</when><when>2023-11-18T07:20:28.000Z</when><when>2023-11-18T07:20:33.000Z</when><when>2023-11-18T07:20:43.000Z</when><when>2023-11-18T07:21:13.000Z</when><when>2023-11-18T07:21:23.000Z</when><when>2023-11-18T07:21:53.000Z</when><when>2023-11-18T07:22:23.000Z</when><when>2023-11-18T07:22:43.000Z</when><when>2023-11-18T07:23:33.000Z</when><when>2023-11-18T07:23:38.000Z</when><when>2023-11-18T07:23:48.000Z</when><when>2023-11-18T07:23:53.000Z</when><when>2023-11-18T07:24:08.000Z</when><when>2023-11-18T07:24:23.000Z</when><when>2023-11-18T07:24:43.000Z</when><when>2023-11-18T07:24:53.000Z</when><when>2023-11-18T07:25:08.000Z</when><when>2023-11-18T07:25:18.000Z</when><when>2023-11-18T07:25:38.000Z</when><when>2023-11-18T07:25:48.000Z</when><when>2023-11-18T07:26:03.000Z</when><when>2023-11-18T07:26:13.000Z</when><when>2023-11-18T07:26:18.000Z</when><when>2023-11-18T07:26:43.000Z</when><when>2023-11-18T07:26:58.000Z</when><when>2023-11-18T07:27:18.000Z</when><when>2023-11-18T07:27:23.000Z</when><when>2023-11-18T07:27:33.000Z</when><when>2023-11-18T07:27:38.000Z</when><when>2023-11-18T07:27:43.000Z</when><when>2023-11-18T07:27:53.000Z</when><when>2023-11-18T07:28:08.000Z</when><when>2023-11-18T07:28:23.000Z</when><when>2023-11-18T07:28:33.000Z</when><when>2023-11-18T07:28:53.000Z</when><when>2023-11-18T07:28:58.000Z</when><when>2023-11-18T07:29:13.000Z</when><when>2023-11-18T07:29:18.000Z</when><when>2023-11-18T07:29:23.000Z</when><when>2023-11-18T07:29:33.000Z</when><when>2023-11-18T07:29:43.000Z</when><when>2023-11-18T07:30:13.000Z</when><when>2023-11-18T07:30:23.000Z</when><when>2023-11-18T07:30:28.000Z</when><when>2023-11-18T07:30:38.000Z</when><when>2023-11-18T07:30:58.000Z</when><when>2023-11-18T07:31:08.000Z</when><when>2023-11-18T07:31:18.000Z</when><when>2023-11-18T07:31:33.000Z</when><when>2023-11-18T07:31:43.000Z</when><when>2023-11-18T07:32:08.000Z</when><when>2023-11-18T07:32:18.000Z</when><when>2023-11-18T07:32:23.000Z</when><when>2023-11-18T07:32:28.000Z</when><when>2023-11-18T07:32:43.000Z</when><when>2023-11-18T07:32:53.000Z</when><when>2023-11-18T07:33:13.000Z</when><when>2023-11-18T07:33:28.000Z</when><when>2023-11-18T07:33:33.000Z</when><when>2023-11-18T07:33:48.000Z</when><when>2023-11-18T07:33:53.000Z</when><when>2023-11-18T07:34:08.000Z</when><when>2023-11-18T07:34:18.000Z</when><when>2023-11-18T07:34:23.000Z</when><when>2023-11-18T07:34:53.000Z</when><when>2023-11-18T07:35:03.000Z</when><when>2023-11-18T07:35:08.000Z</when><when>2023-11-18T07:35:28.000Z</when><when>2023-11-18T07:35:43.000Z</when><when>2023-11-18T07:36:23.000Z</when><when>2023-11-18T07:36:43.000Z</when><when>2023-11-18T07:36:48.000Z</when><when>2023-11-18T07:37:08.000Z</when><when>2023-11-18T07:37:13.000Z</when><when>2023-11-18T07:37:18.000Z</when><when>2023-11-18T07:37:23.000Z</when><when>2023-11-18T07:37:28.000Z</when><when>2023-11-18T07:37:43.000Z</when><when>2023-11-18T07:38:03.000Z</when><when>2023-11-18T07:38:08.000Z</when><when>2023-11-18T07:38:18.000Z</when><when>2023-11-18T07:38:33.000Z</when><when>2023-11-18T07:39:28.000Z</when><when>2023-11-18T07:39:38.000Z</when><when>2023-11-18T07:40:28.000Z</when><when>2023-11-18T07:40:58.000Z</when><when>2023-11-18T07:41:13.000Z</when><when>2023-11-18T07:41:23.000Z</when><when>2023-11-18T07:41:33.000Z</when><when>2023-11-18T07:41:43.000Z</when><when>2023-11-18T07:41:48.000Z</when><when>2023-11-18T07:41:53.000Z</when><when>2023-11-18T07:42:28.000Z</when><when>2023-11-18T07:42:48.000Z</when><when>2023-11-18T07:43:08.000Z</when><when>2023-11-18T07:43:48.000Z</when><when>2023-11-18T07:44:28.000Z</when><when>2023-11-18T07:44:43.000Z</when><when>2023-11-18T07:44:53.000Z</when><when>2023-11-18T07:45:03.000Z</when><when>2023-11-18T07:45:23.000Z</when><when>2023-11-18T07:45:53.000Z</when><when>2023-11-18T07:46:18.000Z</when><when>2023-11-18T07:46:48.000Z</when><when>2023-11-18T07:46:58.000Z</when><gx:coord>139.78947 35.5424117 15.4</gx:coord><gx:coord>139.7893583 35.54258 16.2</gx:coord><gx:coord>139.7892567 35.5428883 36.4</gx:coord><gx:coord>139.789405 35.543035 49</gx:coord><gx:coord>139.7899717 35.5433183 67.6</gx:coord><gx:coord>139.7900767 35.5433367 61.4</gx:coord><gx:coord>139.7902 35.5434133 55.8</gx:coord><gx:coord>139.79034 35.54326 47</gx:coord><gx:coord>139.7904033 35.54316 43.4</gx:coord><gx:coord>139.7904217 35.5431833 40.8</gx:coord><gx:coord>139.7903383 35.5433567 38.8</gx:coord><gx:coord>139.7901267 35.5435917 40</gx:coord><gx:coord>139.7900017 35.543825 38.8</gx:coord><gx:coord>139.7895283 35.5444433 37</gx:coord><gx:coord>139.78899 35.545245 34.8</gx:coord><gx:coord>139.78874 35.54551 34.8</gx:coord><gx:coord>139.7886017 35.5456033 34</gx:coord><gx:coord>139.7885767 35.5456867 32.8</gx:coord><gx:coord>139.7883867 35.54592 32.8</gx:coord><gx:coord>139.7882683 35.5460267 32.8</gx:coord><gx:coord>139.7881417 35.54622 31.6</gx:coord><gx:coord>139.7880333 35.546305 29.4</gx:coord><gx:coord>139.787855 35.5463683 29.6</gx:coord><gx:coord>139.7876383 35.54639 29.8</gx:coord><gx:coord>139.7873683 35.5463283 24.2</gx:coord><gx:coord>139.7871633 35.54625 20.8</gx:coord><gx:coord>139.787005 35.546215 21.2</gx:coord><gx:coord>139.7868767 35.5462167 22.4</gx:coord><gx:coord>139.78676 35.5461183 24.4</gx:coord><gx:coord>139.7866683 35.5462567 24.8</gx:coord><gx:coord>139.7865417 35.5463167 22.8</gx:coord><gx:coord>139.7864067 35.5464067 22.6</gx:coord><gx:coord>139.7862483 35.5465817 22.4</gx:coord><gx:coord>139.786105 35.5467717 23.2</gx:coord><gx:coord>139.7859583 35.5469117 22</gx:coord><gx:coord>139.785835 35.5471233 22</gx:coord><gx:coord>139.7856833 35.5472883 22.4</gx:coord><gx:coord>139.7855983 35.54744 22.4</gx:coord><gx:coord>139.785525 35.5475033 22.8</gx:coord><gx:coord>139.7854883 35.5475233 22.4</gx:coord><gx:coord>139.785325 35.5475 21.6</gx:coord><gx:coord>139.785255 35.5475183 22.6</gx:coord><gx:coord>139.7852267 35.5474817 23</gx:coord><gx:coord>139.78515 35.5474683 23</gx:coord><gx:coord>139.7851083 35.547495 23</gx:coord><gx:coord>139.7850333 35.5474633 21.6</gx:coord><gx:coord>139.7850067 35.5474283 21.6</gx:coord><gx:coord>139.7849733 35.5474683 21</gx:coord><gx:coord>139.7849333 35.5474783 22</gx:coord><gx:coord>139.784865 35.54758 24.8</gx:coord><gx:coord>139.7848217 35.54761 22.4</gx:coord><gx:coord>139.784805 35.5476967 24.6</gx:coord><gx:coord>139.7847767 35.547705 24.6</gx:coord><gx:coord>139.7847167 35.5477733 27.2</gx:coord><gx:coord>139.7845917 35.5478717 26.6</gx:coord><gx:coord>139.7845633 35.5479783 27.8</gx:coord><gx:coord>139.78453 35.5480283 27</gx:coord><gx:coord>139.7845433 35.5480767 27</gx:coord><gx:coord>139.784485 35.5481117 27</gx:coord><gx:coord>139.7844683 35.54854 26</gx:coord><gx:coord>139.784395 35.5485933 26</gx:coord><gx:coord>139.7843667 35.5486917 26</gx:coord><gx:coord>139.784385 35.5487467 26</gx:coord><gx:coord>139.7844283 35.5487433 26</gx:coord><gx:coord>139.7844717 35.5487983 23.8</gx:coord><gx:coord>139.78445 35.5488117 23.6</gx:coord><gx:coord>139.7844583 35.548825 23.6</gx:coord><gx:coord>139.784325 35.5488383 25</gx:coord><gx:coord>139.7841983 35.5488783 24.2</gx:coord><gx:coord>139.7841967 35.5489067 26.2</gx:coord><gx:coord>139.78422 35.54893 29.2</gx:coord><gx:coord>139.784145 35.5489017 37.8</gx:coord><gx:coord>139.7841567 35.5489 41.2</gx:coord><gx:coord>139.784125 35.5488133 43.4</gx:coord><gx:coord>139.784155 35.5488167 43.4</gx:coord><gx:coord>139.7842833 35.5487533 45</gx:coord><gx:coord>139.78447 35.548565 42.2</gx:coord><gx:coord>139.7845183 35.548465 42</gx:coord><gx:coord>139.7844967 35.5484183 47.4</gx:coord><gx:coord>139.7845533 35.54838 60.4</gx:coord><gx:coord>139.7844983 35.548345 69.2</gx:coord><gx:coord>139.7845117 35.5483367 70.2</gx:coord><gx:coord>139.7844867 35.5483117 70.6</gx:coord><gx:coord>139.7843567 35.54824 71.6</gx:coord><gx:coord>139.7843767 35.5482883 72.8</gx:coord><gx:coord>139.7843833 35.548275 73.6</gx:coord><gx:coord>139.7843617 35.5482533 72.6</gx:coord><gx:coord>139.78435 35.5482667 71.4</gx:coord><gx:coord>139.7843817 35.5482683 71.4</gx:coord><gx:coord>139.7843933 35.5482917 71.8</gx:coord><gx:coord>139.7842933 35.5482967 73.4</gx:coord><gx:coord>139.7843267 35.5483317 75.8</gx:coord><gx:coord>139.7842983 35.54839 76.8</gx:coord><gx:coord>139.7841983 35.548505 75.8</gx:coord><gx:coord>139.7840933 35.5485267 75.8</gx:coord><gx:coord>139.78401 35.5485733 74</gx:coord><gx:coord>139.7839367 35.5485333 68.2</gx:coord><gx:coord>139.7838383 35.5486583 52.8</gx:coord><gx:coord>139.783825 35.54866 46.6</gx:coord><gx:coord>139.7838167 35.5486333 40</gx:coord><gx:coord>139.7837883 35.5486383 37.4</gx:coord><gx:coord>139.7837283 35.54874 36.2</gx:coord><gx:coord>139.7836867 35.5488767 36</gx:coord><gx:coord>139.7836383 35.54897 37.6</gx:coord><gx:coord>139.78364 35.5490083 37</gx:coord><gx:coord>139.783625 35.5490367 36.6</gx:coord><gx:coord>139.7836117 35.549015 35</gx:coord><gx:coord>139.7836217 35.5490033 32.4</gx:coord><gx:coord>139.78365 35.5490217 29.6</gx:coord><gx:coord>139.7836767 35.5491133 30.6</gx:coord><gx:coord>139.7837067 35.5491483 28</gx:coord><gx:coord>139.7837033 35.5492333 26.8</gx:coord><gx:coord>139.7836533 35.5493033 26.6</gx:coord><gx:coord>139.7836267 35.5492283 27.2</gx:coord><gx:coord>139.7835917 35.549205 27.4</gx:coord><gx:coord>139.783605 35.549235 27.4</gx:coord><gx:coord>139.7836683 35.5492633 26.2</gx:coord><gx:coord>139.78366 35.5493417 26.6</gx:coord><gx:coord>139.7836617 35.54932 23.4</gx:coord><gx:coord>139.783625 35.5492867 25.8</gx:coord><gx:coord>139.78354 35.5492733 25.2</gx:coord><gx:coord>139.7834833 35.54924 25.2</gx:coord><gx:coord>139.783535 35.5492817 25.8</gx:coord><gx:coord>139.783475 35.5492167 30.4</gx:coord><gx:coord>139.7834683 35.5492283 32.2</gx:coord><gx:coord>139.783485 35.5492283 34</gx:coord><gx:coord>139.7835017 35.549155 35.4</gx:coord><gx:coord>139.7835417 35.5491317 37.6</gx:coord><gx:coord>139.7835167 35.5491 35.4</gx:coord><gx:coord>139.78357 35.5491167 37</gx:coord><gx:coord>139.7837167 35.5490717 33.8</gx:coord><gx:coord>139.7838517 35.5489683 31.2</gx:coord><gx:coord>139.7838583 35.5489333 26.6</gx:coord><gx:coord>139.7839917 35.548845 21.6</gx:coord><gx:coord>139.7840833 35.5489267 18.6</gx:coord><gx:coord>139.784075 35.54894 16.8</gx:coord><gx:coord>139.7840617 35.5489367 15.2</gx:coord><gx:coord>139.7840767 35.54892 13.2</gx:coord><gx:coord>139.784035 35.5489133 13</gx:coord><gx:coord>139.7840083 35.5488717 13.2</gx:coord><gx:coord>139.7840083 35.5488467 15</gx:coord><gx:coord>139.7840483 35.5488467 15.6</gx:coord><gx:coord>139.78403 35.5489167 14.6</gx:coord><gx:coord>139.7840133 35.5488783 13.2</gx:coord><gx:coord>139.7840317 35.5488417 15.6</gx:coord><gx:coord>139.7839733 35.5488233 14.8</gx:coord><gx:coord>139.783995 35.5487633 14.8</gx:coord><gx:coord>139.7840167 35.5488783 13</gx:coord><gx:coord>139.7840067 35.5488933 13</gx:coord><gx:coord>139.7841267 35.5489567 10.8</gx:coord><gx:coord>139.7842 35.5488883 12</gx:coord><gx:coord>139.7842417 35.5489 14.6</gx:coord><gx:coord>139.784195 35.5488967 15.8</gx:coord><gx:coord>139.78416 35.54894 16.2</gx:coord><gx:coord>139.7840817 35.5489533 17</gx:coord><gx:coord>139.784065 35.548945 16.8</gx:coord><gx:coord>139.78406 35.5489583 17</gx:coord><gx:coord>139.78405 35.548835 16.4</gx:coord><gx:coord>139.7840683 35.5487017 16.4</gx:coord><gx:coord>139.784115 35.5487517 16.4</gx:coord><gx:coord>139.78418 35.54867 17</gx:coord><gx:coord>139.7842533 35.5487333 15.4</gx:coord><gx:coord>139.7842117 35.5487517 20</gx:coord><gx:coord>139.7841117 35.5488483 19.6</gx:coord><gx:coord>139.78408 35.5488567 20</gx:coord><gx:coord>139.7840667 35.5489333 19.6</gx:coord><gx:coord>139.784325 35.54899 19.6</gx:coord><gx:coord>139.784445 35.5489883 18.8</gx:coord><gx:coord>139.784445 35.5490333 19</gx:coord><gx:coord>139.7843967 35.5491317 18</gx:coord><gx:coord>139.784405 35.5491683 20</gx:coord><gx:coord>139.7844617 35.5491483 20</gx:coord><gx:coord>139.78447 35.5491933 19.8</gx:coord><gx:coord>139.7845267 35.5492167 25.8</gx:coord><gx:coord>139.7845267 35.5492383 28.8</gx:coord><gx:coord>139.7845383 35.5492333 30.8</gx:coord><gx:coord>139.78452 35.5492383 33.6</gx:coord><gx:coord>139.7845483 35.5491967 34.4</gx:coord><gx:coord>139.7845733 35.5492333 34.4</gx:coord><gx:coord>139.7845767 35.5491883 34.4</gx:coord><gx:coord>139.784515 35.5491967 30.4</gx:coord><gx:coord>139.7844717 35.5490483 22.4</gx:coord><gx:coord>139.7845067 35.5490067 22.4</gx:coord><gx:coord>139.7845617 35.5489933 31.8</gx:coord><gx:coord>139.7846367 35.54894 31.8</gx:coord><gx:coord>139.7848367 35.5488967 32</gx:coord><gx:coord>139.7849583 35.5489067 30</gx:coord><gx:coord>139.78518 35.5489583 30.4</gx:coord><gx:coord>139.7852517 35.54903 31.6</gx:coord><gx:coord>139.785345 35.5490383 30.4</gx:coord><gx:coord>139.7854167 35.549065 32.2</gx:coord><gx:coord>139.7857183 35.54924 37.2</gx:coord><gx:coord>139.7858167 35.5492583 40</gx:coord><gx:coord>139.7859033 35.54932 42.4</gx:coord><gx:coord>139.78612 35.549405 44.2</gx:coord><gx:coord>139.7862683 35.5495017 44.4</gx:coord><gx:coord>139.7865833 35.54963 44.6</gx:coord><gx:coord>139.78705 35.5498417 43.8</gx:coord><gx:coord>139.7870917 35.5498733 43.6</gx:coord><gx:coord>139.7871767 35.5498917 43.4</gx:coord><gx:coord>139.7873033 35.5499817 41.8</gx:coord><gx:coord>139.7877083 35.5501417 40.8</gx:coord><gx:coord>139.7878817 35.550275 40.8</gx:coord><gx:coord>139.7880417 35.55029 40.8</gx:coord><gx:coord>139.7882917 35.5503833 46.8</gx:coord><gx:coord>139.7885267 35.5505 46.8</gx:coord><gx:coord>139.7890383 35.5506833 41.6</gx:coord><gx:coord>139.7893383 35.5506733 40.2</gx:coord><gx:coord>139.789355 35.550635 42</gx:coord><gx:coord>139.7893267 35.5506117 37.6</gx:coord><gx:coord>139.7893467 35.550565 38.6</gx:coord><gx:coord>139.7893117 35.5505983 42.2</gx:coord><gx:coord>139.7892983 35.5506383 41</gx:coord><gx:coord>139.7892717 35.55063 41.8</gx:coord><gx:coord>139.78932 35.5506933 34.8</gx:coord><gx:coord>139.789275 35.5507517 33.4</gx:coord><gx:coord>139.7892767 35.550775 29.8</gx:coord><gx:coord>139.7892117 35.5507667 28.8</gx:coord><gx:coord>139.7892333 35.5507433 27.2</gx:coord><gx:coord>139.78925 35.55076 29</gx:coord><gx:coord>139.7892233 35.5508217 27.4</gx:coord><gx:coord>139.789315 35.5507033 30.6</gx:coord><gx:coord>139.78934 35.550585 33.2</gx:coord><gx:coord>139.7895317 35.5503333 41</gx:coord><gx:coord>139.7895567 35.5503183 41</gx:coord><gx:coord>139.7895667 35.5503317 37.4</gx:coord><gx:coord>139.7895633 35.5503167 38</gx:coord><gx:coord>139.7893883 35.5505 33.2</gx:coord><gx:coord>139.7892817 35.5506667 34.8</gx:coord><gx:coord>139.7892633 35.5507217 33.8</gx:coord><gx:coord>139.7892983 35.5507567 30</gx:coord><gx:coord>139.7892833 35.5507483 28</gx:coord><gx:coord>139.78927 35.5507583 27.2</gx:coord><gx:coord>139.7892733 35.550745 27.2</gx:coord><gx:coord>139.7892483 35.5507867 22.4</gx:coord><gx:coord>139.789235 35.5507867 23.2</gx:coord><gx:coord>139.789255 35.5507517 23.4</gx:coord><gx:coord>139.7892117 35.5507767 22.2</gx:coord><gx:coord>139.7892267 35.5507817 22.2</gx:coord><gx:coord>139.7892233 35.550765 22.2</gx:coord><gx:coord>139.78921 35.5507917 22</gx:coord><gx:coord>139.7892317 35.550795 22</gx:coord><gx:coord>139.7892267 35.5507733 21.6</gx:coord><gx:coord>139.7892083 35.5507833 21.8</gx:coord><gx:coord>139.78924 35.550775 22</gx:coord><gx:coord>139.7892117 35.5507967 22.2</gx:coord><gx:coord>139.7892083 35.5507617 24.8</gx:coord><gx:coord>139.7892483 35.550705 24.6</gx:coord><gx:coord>139.7892267 35.550675 26.6</gx:coord><gx:coord>139.789185 35.5507067 25.2</gx:coord><gx:coord>139.7892317 35.5506667 26.4</gx:coord><gx:coord>139.7891367 35.5507017 12.8</gx:coord><gx:coord>139.7889033 35.5507333 12.8</gx:coord><gx:coord>139.7889067 35.5507733 13</gx:coord><gx:coord>139.788815 35.5508183 12.4</gx:coord><gx:coord>139.78848 35.5508217 26</gx:coord><gx:coord>139.7883267 35.5508083 29</gx:coord><gx:coord>139.7884033 35.5507283 32.4</gx:coord><gx:coord>139.788425 35.5506467 34.2</gx:coord><gx:coord>139.7884583 35.5506183 34.2</gx:coord><gx:coord>139.7884817 35.5505533 32.2</gx:coord><gx:coord>139.788815 35.5500367 32.2</gx:coord><gx:coord>139.789085 35.5496933 32.2</gx:coord><gx:coord>139.7896567 35.5487617 24</gx:coord><gx:coord>139.7898083 35.5484417 22.8</gx:coord><gx:coord>139.78987 35.54808 21.2</gx:coord><gx:coord>139.7897667 35.5477933 21.2</gx:coord><gx:coord>139.7895833 35.547645 21.2</gx:coord><gx:coord>139.78826 35.5468583 18.4</gx:coord><gx:coord>139.787795 35.54666 15.2</gx:coord><gx:coord>139.7874167 35.54647 12.8</gx:coord><gx:coord>139.7871417 35.5463883 13.8</gx:coord><gx:coord>139.7869233 35.5464067 7.2</gx:coord><gx:coord>139.786655 35.5465033 7.2</gx:coord><gx:coord>139.78636 35.546775 7.2</gx:coord><gx:coord>139.78605 35.5471667 7.2</gx:coord><gx:coord>139.7858317 35.5475217 7.2</gx:coord><gx:coord>139.7857283 35.5477467 7.2</gx:coord><gx:coord>139.7855617 35.54795 4.6</gx:coord><gx:coord>139.7854883 35.5481083 7.4</gx:coord><gx:coord>139.7853933 35.5482167 7.4</gx:coord><gx:coord>139.7853533 35.5483133 9.8</gx:coord><gx:coord>139.7852117 35.548525 15.4</gx:coord><gx:coord>139.7852083 35.5485567 19.2</gx:coord><gx:coord>139.7851683 35.54859 21.8</gx:coord><gx:coord>139.7851733 35.5486383 22.6</gx:coord><gx:coord>139.7851717 35.5485967 22.4</gx:coord><gx:coord>139.78515 35.54861 22.4</gx:coord><gx:coord>139.78514 35.5486767 19.6</gx:coord><gx:coord>139.7850167 35.5487517 21</gx:coord><gx:coord>139.784995 35.54882 22.8</gx:coord><gx:coord>139.7847467 35.5491 25</gx:coord><gx:coord>139.7845633 35.5494317 28.8</gx:coord><gx:coord>139.7843183 35.54971 28.8</gx:coord><gx:coord>139.7841 35.5500367 31.8</gx:coord><gx:coord>139.783975 35.5502733 33</gx:coord><gx:coord>139.7835783 35.5506867 33</gx:coord><gx:coord>139.7831467 35.551365 33</gx:coord><gx:coord>139.7830717 35.551765 33</gx:coord><gx:coord>139.7832117 35.5521883 33</gx:coord><gx:coord>139.783485 35.55248 32.6</gx:coord><gx:coord>139.7835533 35.55271 32.6</gx:coord><gx:coord>139.7827517 35.5539917 24.4</gx:coord><gx:coord>139.7824767 35.5543117 24.4</gx:coord><gx:coord>139.782325 35.55443 24.4</gx:coord><gx:coord>139.7819017 35.55452 24.4</gx:coord><gx:coord>139.7812167 35.5542633 14</gx:coord><gx:coord>139.78063 35.5539583 7.8</gx:coord><gx:coord>139.7777733 35.5526333 9.4</gx:coord><gx:coord>139.7747817 35.5511683 9.4</gx:coord><gx:coord>139.771305 35.5494883 9.4</gx:coord><gx:coord>139.7686717 35.5483017 13.8</gx:coord><gx:coord>139.7680233 35.5479533 19.2</gx:coord><gx:coord>139.7674533 35.5477283 19.8</gx:coord><gx:coord>139.76695 35.547485 19.8</gx:coord><gx:coord>139.7666167 35.5473467 22.8</gx:coord><gx:coord>139.7664383 35.5472467 23.8</gx:coord><gx:coord>139.7665417 35.5470583 23</gx:coord><gx:coord>139.7666367 35.5469517 19.8</gx:coord><gx:coord>139.7673617 35.54591 20.2</gx:coord><gx:coord>139.7678083 35.5453367 20.2</gx:coord><gx:coord>139.76799 35.545055 17.8</gx:coord><gx:coord>139.768175 35.5448183 17.8</gx:coord><gx:coord>139.768285 35.5446317 17.8</gx:coord><gx:coord>139.76845 35.54466 17.8</gx:coord><gx:coord>139.7685867 35.5447283 18.4</gx:coord><gx:coord>139.7688017 35.544795 38.6</gx:coord><gx:coord>139.768865 35.5448 44.2</gx:coord><gx:coord>139.7689683 35.5448733 43.8</gx:coord><gx:coord>139.7691183 35.544915 45.8</gx:coord><gx:coord>139.7692483 35.54499 28</gx:coord><gx:coord>139.7693267 35.545005 30</gx:coord><gx:coord>139.7693383 35.5450333 39</gx:coord><gx:coord>139.7693917 35.5450533 39</gx:coord><gx:coord>139.769425 35.5450933 39</gx:coord><gx:coord>139.7694983 35.5451083 39</gx:coord><gx:coord>139.7695267 35.5451517 39</gx:coord><gx:coord>139.769535 35.54519 39</gx:coord><gx:coord>139.7694783 35.5452883 39</gx:coord><gx:coord>139.7695133 35.5453567 39</gx:coord><gx:coord>139.769605 35.5453817 39</gx:coord><gx:coord>139.7696033 35.5453967 39</gx:coord><gx:coord>139.7696667 35.54539 39</gx:coord><gx:coord>139.7697633 35.5454217 39</gx:coord><gx:coord>139.769825 35.5454733 39</gx:coord><gx:coord>139.7698683 35.5454817 39</gx:coord><gx:coord>139.76994 35.5454367 39</gx:coord><gx:coord>139.7699567 35.5453567 45.8</gx:coord><gx:coord>139.7699217 35.5452633 47</gx:coord><gx:coord>139.769905 35.5452483 47.4</gx:coord><gx:coord>139.76988 35.545265 44.4</gx:coord><gx:coord>139.7698617 35.5452533 44.6</gx:coord><gx:coord>139.7698283 35.5451483 45</gx:coord><gx:coord>139.7698333 35.5451017 45.2</gx:coord><gx:coord>139.7701817 35.544635 50.8</gx:coord><gx:coord>139.7702483 35.5444867 47</gx:coord><gx:coord>139.77032 35.5444183 47</gx:coord><gx:coord>139.77037 35.5444333 47.8</gx:coord><gx:coord>139.7703017 35.5444417 48.4</gx:coord><gx:coord>139.770305 35.5444233 49.6</gx:coord><gx:coord>139.7703233 35.5444317 49.6</gx:coord><gx:coord>139.7703033 35.54446 51.4</gx:coord><gx:coord>139.770175 35.5445883 51.4</gx:coord><gx:coord>139.7701433 35.5446433 49.8</gx:coord><gx:coord>139.7701167 35.544655 48.8</gx:coord><gx:coord>139.7701433 35.5446683 49.2</gx:coord><gx:coord>139.7701067 35.544765 46.6</gx:coord><gx:coord>139.7699067 35.5448767 38.8</gx:coord><gx:coord>139.7697833 35.5450067 32.2</gx:coord><gx:coord>139.7697817 35.5451017 33</gx:coord><gx:coord>139.7698433 35.54531 27.2</gx:coord><gx:coord>139.7697683 35.5454217 23</gx:coord><gx:coord>139.769705 35.545385 17.8</gx:coord><gx:coord>139.7696833 35.545425 17.8</gx:coord><gx:coord>139.7696033 35.545485 20.8</gx:coord><gx:coord>139.7695433 35.545485 18.2</gx:coord><gx:coord>139.76948 35.5454533 20.2</gx:coord><gx:coord>139.76947 35.5454333 21.2</gx:coord><gx:coord>139.7694417 35.5454467 21.2</gx:coord><gx:coord>139.7694317 35.54542 25.4</gx:coord><gx:coord>139.7693683 35.5453883 25.4</gx:coord><gx:coord>139.769265 35.5453633 23.4</gx:coord><gx:coord>139.7691883 35.5453233 22.8</gx:coord><gx:coord>139.7691133 35.54533 23.2</gx:coord><gx:coord>139.76909 35.545295 27.4</gx:coord><gx:coord>139.76905 35.5452917 27.4</gx:coord><gx:coord>139.7690017 35.5453333 27.4</gx:coord><gx:coord>139.768935 35.5453567 25.4</gx:coord><gx:coord>139.76884 35.5455333 25.4</gx:coord><gx:coord>139.7687467 35.5455967 25.4</gx:coord><gx:coord>139.7686717 35.5456917 23.6</gx:coord><gx:coord>139.7686883 35.5455767 23.4</gx:coord><gx:coord>139.7687383 35.5455333 23.4</gx:coord><gx:coord>139.7687933 35.545365 22.2</gx:coord><gx:coord>139.7688517 35.5453117 22.8</gx:coord><gx:coord>139.76893 35.54514 27.2</gx:coord><gx:coord>139.7690483 35.5450333 21.8</gx:coord><gx:coord>139.7690967 35.5450217 21.8</gx:coord><gx:coord>139.7691467 35.5450467 21.8</gx:coord><gx:coord>139.76905 35.5449233 21.8</gx:coord><gx:coord>139.768965 35.5449233 21.8</gx:coord><gx:coord>139.7688383 35.544825 24.2</gx:coord><gx:coord>139.76876 35.54479 24.6</gx:coord><gx:coord>139.768645 35.5447717 27.4</gx:coord><gx:coord>139.7684567 35.544685 31.6</gx:coord><gx:coord>139.7683533 35.5446767 31.6</gx:coord><gx:coord>139.7683383 35.5446083 33.8</gx:coord><gx:coord>139.7684583 35.5445 32</gx:coord><gx:coord>139.7686317 35.5442433 30.6</gx:coord><gx:coord>139.768645 35.544195 32</gx:coord><gx:coord>139.7686467 35.5442333 33.6</gx:coord><gx:coord>139.7686017 35.5443033 32.6</gx:coord><gx:coord>139.7685733 35.5443167 33.8</gx:coord><gx:coord>139.7683683 35.5445767 34.4</gx:coord><gx:coord>139.7682683 35.5447617 34.8</gx:coord><gx:coord>139.7682333 35.5447767 35.2</gx:coord><gx:coord>139.7681933 35.544865 35.4</gx:coord><gx:coord>139.768025 35.5450617 36.6</gx:coord><gx:coord>139.7680167 35.545095 36.2</gx:coord><gx:coord>139.7678117 35.5453617 32.2</gx:coord><gx:coord>139.767705 35.5455333 35.4</gx:coord><gx:coord>139.76761 35.5456267 37.4</gx:coord><gx:coord>139.7675083 35.5458017 35.2</gx:coord><gx:coord>139.76743 35.545875 28.6</gx:coord><gx:coord>139.7674267 35.545905 29.2</gx:coord><gx:coord>139.7673417 35.5460283 29.6</gx:coord><gx:coord>139.7672067 35.5461867 29.8</gx:coord><gx:coord>139.7671517 35.5462917 30.2</gx:coord><gx:coord>139.7670733 35.54637 20.6</gx:coord><gx:coord>139.76699 35.5465167 6.8</gx:coord><gx:coord>139.7669233 35.5465733 0.6</gx:coord><gx:coord>139.766845 35.546695 -2</gx:coord><gx:coord>139.7668367 35.5467367 -5.8</gx:coord><gx:coord>139.76661 35.5470133 -4.6</gx:coord><gx:coord>139.7665117 35.547175 -7.2</gx:coord><gx:coord>139.766455 35.54722 -5</gx:coord><gx:coord>139.7662667 35.5471117 -4.8</gx:coord><gx:coord>139.7661267 35.54707 -3.2</gx:coord><gx:coord>139.7635883 35.5458483 -8.2</gx:coord><gx:coord>139.7634683 35.5457717 -9.4</gx:coord><gx:coord>139.76331 35.545635 -11</gx:coord><gx:coord>139.7632167 35.5455317 -10.6</gx:coord><gx:coord>139.763095 35.5453617 -10.8</gx:coord><gx:coord>139.7629883 35.5451617 -7</gx:coord><gx:coord>139.7626967 35.5447017 -5.4</gx:coord><gx:coord>139.7627083 35.5446467 -2.8</gx:coord><gx:coord>139.7630167 35.54451 3.8</gx:coord><gx:coord>139.7631117 35.5444883 2</gx:coord><gx:coord>139.7631467 35.54454 -1.8</gx:coord><gx:coord>139.7631017 35.544425 -3.8</gx:coord><gx:coord>139.7630667 35.5444067 0.4</gx:coord><gx:coord>139.7631117 35.5443667 0.4</gx:coord><gx:coord>139.7632367 35.5443217 3</gx:coord><gx:coord>139.763055 35.5440117 3.4</gx:coord><gx:coord>139.7630083 35.54396 2.4</gx:coord><gx:coord>139.7629167 35.5437683 2.6</gx:coord><gx:coord>139.7626 35.5432617 5.2</gx:coord><gx:coord>139.7626467 35.5433283 5.4</gx:coord><gx:coord>139.7625333 35.543105 4</gx:coord><gx:coord>139.7624367 35.5429667 5.8</gx:coord><gx:coord>139.76235 35.5428883 8.6</gx:coord><gx:coord>139.7623583 35.5428567 6.4</gx:coord><gx:coord>139.7623367 35.5427983 5.6</gx:coord><gx:coord>139.7622233 35.5426517 4.6</gx:coord><gx:coord>139.762135 35.54249 6.4</gx:coord><gx:coord>139.762085 35.5424467 8.2</gx:coord><gx:coord>139.7617417 35.5418617 5.4</gx:coord><gx:coord>139.7616717 35.541775 8.6</gx:coord><gx:coord>139.7614 35.5412867 3.4</gx:coord><gx:coord>139.76117 35.5409617 4.8</gx:coord><gx:coord>139.76101 35.5406667 3</gx:coord><gx:coord>139.7606617 35.5401333 6.6</gx:coord><gx:coord>139.7605983 35.5400017 3.8</gx:coord><gx:coord>139.7605183 35.5399033 4.2</gx:coord><gx:coord>139.7604783 35.5398133 4.8</gx:coord><gx:coord>139.7603083 35.53957 3.6</gx:coord><gx:coord>139.7602617 35.53947 1</gx:coord><gx:coord>139.7601467 35.539325 0.4</gx:coord><gx:coord>139.7599683 35.53902 -1.4</gx:coord><gx:coord>139.7599183 35.538915 -1.6</gx:coord><gx:coord>139.7599167 35.5388767 -0.6</gx:coord><gx:coord>139.75985 35.53878 1.2</gx:coord><gx:coord>139.75985 35.5387333 1.4</gx:coord><gx:coord>139.759795 35.53869 2</gx:coord><gx:coord>139.7597983 35.5386667 2.8</gx:coord><gx:coord>139.7597567 35.538625 1.2</gx:coord><gx:coord>139.75945 35.538705 -2</gx:coord><gx:coord>139.759315 35.5387767 -2</gx:coord><gx:coord>139.7589417 35.538935 0</gx:coord><gx:coord>139.75859 35.5390483 -2.8</gx:coord><gx:coord>139.7583333 35.5391667 -3.4</gx:coord><gx:coord>139.7576633 35.5393133 -0.6</gx:coord><gx:coord>139.757595 35.5393517 -1.2</gx:coord><gx:coord>139.7574733 35.539365 -0.6</gx:coord><gx:coord>139.75742 35.5393983 1.6</gx:coord><gx:coord>139.7572117 35.539415 -3.8</gx:coord><gx:coord>139.7570217 35.53947 -1.4</gx:coord><gx:coord>139.7567483 35.53951 -2</gx:coord><gx:coord>139.7566 35.5395083 1.2</gx:coord><gx:coord>139.7564033 35.539565 3.2</gx:coord><gx:coord>139.75627 35.5395867 1</gx:coord><gx:coord>139.7560033 35.5396 3</gx:coord><gx:coord>139.7558733 35.5395833 2.8</gx:coord><gx:coord>139.7556733 35.5396 9.4</gx:coord><gx:coord>139.755555 35.5395867 9.4</gx:coord><gx:coord>139.7554767 35.53961 12.2</gx:coord><gx:coord>139.755135 35.539615 8.6</gx:coord><gx:coord>139.754955 35.5395883 13.4</gx:coord><gx:coord>139.7546783 35.5395867 14</gx:coord><gx:coord>139.7546267 35.5395983 15</gx:coord><gx:coord>139.75452 35.5395667 23.6</gx:coord><gx:coord>139.754475 35.5395383 22.6</gx:coord><gx:coord>139.7544017 35.539535 27.2</gx:coord><gx:coord>139.7542567 35.5394883 26.2</gx:coord><gx:coord>139.7541217 35.5392883 21.8</gx:coord><gx:coord>139.7540333 35.5390783 22.4</gx:coord><gx:coord>139.7540767 35.5389583 26.2</gx:coord><gx:coord>139.75408 35.53872 35.2</gx:coord><gx:coord>139.75406 35.5387033 39</gx:coord><gx:coord>139.7539033 35.5387017 50</gx:coord><gx:coord>139.753865 35.538715 56.2</gx:coord><gx:coord>139.7538033 35.5386917 61</gx:coord><gx:coord>139.7536867 35.5387167 62.8</gx:coord><gx:coord>139.753555 35.5387217 64.8</gx:coord><gx:coord>139.7531767 35.538705 56.4</gx:coord><gx:coord>139.75302 35.5387417 53.8</gx:coord><gx:coord>139.7529533 35.5387383 49.2</gx:coord><gx:coord>139.7527983 35.538765 45.8</gx:coord><gx:coord>139.7525067 35.538765 47</gx:coord><gx:coord>139.75237 35.5387833 46.6</gx:coord><gx:coord>139.7522533 35.5387517 43.8</gx:coord><gx:coord>139.75207 35.538735 41.6</gx:coord><gx:coord>139.7519467 35.5387667 39.8</gx:coord><gx:coord>139.7515767 35.5387833 27.4</gx:coord><gx:coord>139.751465 35.53877 21.8</gx:coord><gx:coord>139.75141 35.53879 18</gx:coord><gx:coord>139.7513817 35.5387883 17.2</gx:coord><gx:coord>139.751235 35.53868 21.8</gx:coord><gx:coord>139.7510917 35.5386667 22.8</gx:coord><gx:coord>139.7507617 35.5386817 25.4</gx:coord><gx:coord>139.7506217 35.5386567 19.4</gx:coord><gx:coord>139.7505767 35.53867 18.8</gx:coord><gx:coord>139.75041 35.538675 11.8</gx:coord><gx:coord>139.75034 35.5386983 6.6</gx:coord><gx:coord>139.7501383 35.5386583 5.8</gx:coord><gx:coord>139.750015 35.5386767 3.4</gx:coord><gx:coord>139.7499333 35.5386633 6</gx:coord><gx:coord>139.74954 35.538675 -0.2</gx:coord><gx:coord>139.7493917 35.5386617 -0.4</gx:coord><gx:coord>139.7493117 35.538625 0.2</gx:coord><gx:coord>139.74926 35.5383867 0.6</gx:coord><gx:coord>139.74932 35.538235 5.8</gx:coord><gx:coord>139.7493483 35.537815 12.2</gx:coord><gx:coord>139.7493233 35.537605 13.4</gx:coord><gx:coord>139.749295 35.5375683 13.2</gx:coord><gx:coord>139.74927 35.5374267 16.6</gx:coord><gx:coord>139.7492467 35.5374117 19</gx:coord><gx:coord>139.7492383 35.53737 15.6</gx:coord><gx:coord>139.7492383 35.5372767 11.8</gx:coord><gx:coord>139.7492733 35.5372183 9.4</gx:coord><gx:coord>139.7492283 35.5369467 7.8</gx:coord><gx:coord>139.7492383 35.5367567 5.4</gx:coord><gx:coord>139.7492133 35.5367 7.4</gx:coord><gx:coord>139.7492167 35.5365917 7.4</gx:coord><gx:coord>139.7491683 35.53645 5.8</gx:coord><gx:coord>139.7490533 35.5358733 3</gx:coord><gx:coord>139.7490083 35.535785 5.8</gx:coord><gx:coord>139.74885 35.535275 10.2</gx:coord><gx:coord>139.7486933 35.5349867 9.4</gx:coord><gx:coord>139.7486667 35.534855 6.8</gx:coord><gx:coord>139.7485667 35.5348 7</gx:coord><gx:coord>139.7484183 35.5348233 4</gx:coord><gx:coord>139.7483533 35.53481 0.4</gx:coord><gx:coord>139.7483133 35.5347733 -0.4</gx:coord><gx:coord>139.7483033 35.5347467 0.2</gx:coord><gx:coord>139.7485117 35.5347217 4.2</gx:coord><gx:coord>139.7485233 35.5347183 3.6</gx:coord><gx:coord>139.7485117 35.5347083 4.4</gx:coord><gx:coord>139.7484333 35.5347133 -3.2</gx:coord><gx:coord>139.7483183 35.5347483 -9.4</gx:coord><gx:coord>139.7481667 35.5347717 -7.6</gx:coord><gx:coord>139.7480867 35.5347617 -2.8</gx:coord><gx:coord>139.7479633 35.5347717 -2.2</gx:coord><gx:coord>139.74772 35.5348317 -4.2</gx:coord><gx:coord>139.7473333 35.5348517 -10.4</gx:coord><gx:coord>139.7469833 35.5349283 -17.4</gx:coord><gx:coord>139.74676 35.5349467 -10.8</gx:coord><gx:coord>139.7467167 35.5349767 -10.4</gx:coord></gx:Track></Placemark></Folder></Document></kml>";
+  const photosByWaypoint = {};
+  const iconsByWaypoint = {};
+  const DEFAULT_ICON = "photo_camera";
+
+  // waypoint名には、以前のphotodbエクスポート機能(廃止済み)が付与した
+  // 末尾の"_<uuid>"が残っていることがある(レガシーデータ)。表示用には
+  // それを取り除く(photosByWaypoint/iconsByWaypointのキーは生の名前の
+  // ままなので、マッチングには使わない)。
+  function displayName(name) {
+    const i = name.lastIndexOf("_");
+    return i === -1 ? name : name.slice(0, i);
+  }
+
+  // アイコン画像はエクスポート時にこのページと同じディレクトリの
+  // icons/<key>.svgへコピー済み(写真のimages/と同じ考え方。
+  // MkdocsExport.copy_used_icons!/2参照)。アイコンキーごとにStyleを
+  // キャッシュし、同じアイコンを使う複数のwaypointで使い回す。
+  const iconStyleCache = new Map();
+  function iconStyle(icon) {
+    const key = icon || DEFAULT_ICON;
+    let style = iconStyleCache.get(key);
+    if (!style) {
+      style = new ol.style.Style({
+        image: new ol.style.Icon({
+          anchor: [0.5, 0.5],
+          anchorXUnits: "fraction",
+          anchorYUnits: "fraction",
+          // crossOriginは付けない: アイコンはこのページと同じディレクトリの
+          // ローカルファイル(icons/<key>.svg)なので不要。file://で開いた場合、
+          // originが"null"になりCORSモードのfetch自体がブロックされる
+          // (`Access to image at 'file:///...' from origin 'null' has been
+          // blocked by CORS policy`)ため、むしろ付けると読み込みに失敗する。
+          src: `icons/${key}.svg`,
+        }),
+      });
+      iconStyleCache.set(key, style);
+    }
+    return style;
+  }
+
+  function labelStyle(name) {
+    return new ol.style.Style({
+      text: new ol.style.Text({
+        text: name,
+        font: "bold 14px Arial,Verdana,Courier New",
+        overflow: true,
+        fill: new ol.style.Fill({ color: "#222" }),
+        stroke: new ol.style.Stroke({ color: "#eee", width: 2 }),
+        textAlign: "left",
+        offsetX: 22,
+      }),
+    });
+  }
+
+  const source = new ol.source.Vector();
+  const format = new ol.format.KML({ extractStyles: true });
+  const features = format.readFeatures(kmlText, {
+    dataProjection: "EPSG:4326",
+    featureProjection: "EPSG:4326",
+  });
+
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry) continue;
+    const type = geometry.getType();
+
+    if (type === "LineString") {
+      feature.setStyle(
+        new ol.style.Style({
+          stroke: new ol.style.Stroke({ color: "#0000FF", width: 3 }),
+        }),
+      );
+      source.addFeature(feature);
+    } else if (type === "Point") {
+      const name = feature.get("name") || "";
+      if (name.endsWith(". Km")) continue;
+      feature.setStyle([iconStyle(iconsByWaypoint[name]), labelStyle(displayName(name))]);
+      source.addFeature(feature);
+    }
+  }
+
+  const map = new ol.Map({
+    target: "map",
+    layers: [
+      new ol.layer.Tile({ source: new ol.source.OSM() }),
+      new ol.layer.Vector({ source: source }),
+    ],
+    view: new ol.View({ projection: "EPSG:4326", center: [0, 0], zoom: 2 }),
+    controls: [new ol.control.Zoom(), new ol.control.Attribution()],
+  });
+  map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+
+  // tracklog(高度付きのgx:Track由来LineString)がある場合だけ、
+  // 距離・高度の断面図をc3.jsで表示する。stroll.jsのChart/getTrackと
+  // 同じ考え方(区間ごとの距離を積算してdistance/elevationの列を作る)。
+  // timestampは<gx:Track>の<when>から来る4番目の座標成分(coord[3]、
+  // ミリ秒epoch)の区間差分。<when>は必須要素ではないため無い場合は
+  // nullのままにし、後段の再生アニメーションはcanAnimateがfalseになって
+  // 無効化される(assets/svelte/map.tsのgetTrackStatsと同じ前提)。
+  const tracks = [];
+  for (const feature of features) {
+    const geometry = feature.getGeometry();
+    if (!geometry || geometry.getType() !== "LineString") continue;
+    const coords = geometry.getCoordinates();
+    if (coords.length === 0 || coords[0].length < 3) continue;
+
+    tracks.push({ distance: 0, timestamp: 0, coord: coords[0] });
+    for (let i = 0; i < coords.length - 1; i++) {
+      const distance = ol.sphere.getDistance(coords[i], coords[i + 1]);
+      const hasTime = coords[i].length > 3 && coords[i + 1].length > 3;
+      let timestamp = hasTime ? coords[i + 1][3] - coords[i][3] : null;
+      // <when>が時系列順である前提が崩れている(逆順/重複KMLの編集ミスなど)場合、
+      // 所要時間が負になり再生アニメーションのCSS transitionが不正な値になる。
+      // <when>が無い場合と同様nullにして、canAnimateがfalseになり再生自体を
+      // 無効化されるようにする(一部区間だけ壊れた状態での再生はサポートしない)。
+      if (timestamp !== null && timestamp < 0) {
+        console.warn(
+          `[stroll] track point ${i + 1} has an out-of-order <when> timestamp ` +
+            `(prev=${coords[i][3]}, next=${coords[i + 1][3]}, Δ=${timestamp}ms). ` +
+            `Disabling playback animation for this track.`,
+        );
+        timestamp = null;
+      }
+      tracks.push({ distance: distance, timestamp: timestamp, coord: coords[i + 1] });
+    }
+  }
+
+  // 全区間に時刻があるトラックだけ再生アニメーションを有効にする
+  // (一部区間だけ時刻ありという半端な状態はサポートしない)。
+  const canAnimate =
+    tracks.length > 1 && tracks.slice(1).every((t) => typeof t.timestamp === "number");
+
+  if (tracks.length > 0) {
+    document.body.classList.add("has-chart");
+    map.updateSize();
+
+    const chart = c3.generate({
+      bindto: "#chart",
+      padding: { top: 10, right: 10 },
+      data: { x: "x", columns: [] },
+      axis: {
+        x: {
+          type: "indexed",
+          label: { text: "距離 (km)", position: "outer-center" },
+          tick: {
+            format: (v) => `${Math.round(v * 10) / 10}`,
+            count: 20,
+          },
+        },
+        y: { label: { text: "高度 (m)", position: "outer-middle" } },
+      },
+      legend: { show: false },
+    });
+
+    let total_distance = 0;
+    const distance = [];
+    const elevation = [];
+    for (const track of tracks) {
+      total_distance += track.distance;
+      elevation.push(track.coord[2]);
+      distance.push(Math.round((total_distance / 1000) * 100) / 100);
+    }
+    chart.load({
+      columns: [["x"].concat(distance), ["高度"].concat(elevation)],
+      done: () => setChartPoint(0),
+    });
+  }
+
+  // 地図上のトラック線にマウスを合わせると、最も近いトラック点に
+  // 対応するチャート上の点を赤くする(stroll.jsのonPoint/handlePointerMoveと同じ考え方)。
+  // 再生アニメーション中はhandlePointerMove自体を外して、チャート上の点は
+  // 再生位置(setChartPoint)側だけが更新するようにする。
+  function setChartPoint(index) {
+    d3.selectAll("#chart .c3-circle").style("fill", (data, i) =>
+      i === index ? "red" : "transparent",
+    );
+  }
+
+  function handlePointerMove(evt) {
+    if (evt.dragging) return;
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f, {
+      hitTolerance: 5,
+    });
+    if (!feature || feature.getGeometry().getType() !== "LineString") return;
+
+    let nearestIndex = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < tracks.length; i++) {
+      const c = tracks[i].coord;
+      const diff =
+        Math.abs(c[0] - evt.coordinate[0]) + Math.abs(c[1] - evt.coordinate[1]);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nearestIndex = i;
+      }
+    }
+    setChartPoint(nearestIndex);
+  }
+
+  if (tracks.length > 0) {
+    map.on("pointermove", handlePointerMove);
+  }
+
+  // トラックログに沿ってさるのアイコンをアニメーション再生する
+  // (assets/svelte/stroll.jsのStrollMapの考え方の移植。ただしこのページは
+  // EPSG:4326のままなので、stroll.js側にあったEPSG:3857<->経緯度の変換は
+  // 不要)。距離/経過時間/速度の表示は、チャート分の高さを増やしたくない
+  // ため<style>の.stroll-hudで地図左下に重ねる(#map/#chartの高さは
+  // mkdocs_export.exのiframe_height計算と手動で合わせているため、
+  // 高さが変わる要素を増やしたくない)。
+  if (canAnimate) {
+    const SPEED = 120;
+    const OFFSET = 32;
+    // さるがwaypointに近づいたら地図を拡大する(stroll.jsのKmlMap.zoomInMap/
+    // NEAR_MARKER_ZOOMと同じ考え方)。倍率は固定値とし、離れたら再生開始時の
+    // ズーム(baseZoom、handleMoveEndで随時更新)に戻す。
+    const ZOOM_IN_DISTANCE = 100; // メートル
+    const START_ZOOM = 16; // さるクリック時にこのズームへ寄る(baseZoomの初期値にもなる)
+    const NEAR_MARKER_ZOOM = 18; // START_ZOOMとの差でマーカー接近時に寄った感を出す
+    const waypoints = features
+      .filter((f) => f.getGeometry() && f.getGeometry().getType() === "Point")
+      .map((f) => ({ name: f.get("name") || "", coord: f.getGeometry().getCoordinates() }))
+      .filter((w) => !w.name.endsWith(". Km"));
+    const zoomInMap = new Map();
+    for (const waypoint of waypoints) {
+      for (let i = 0; i < tracks.length; i++) {
+        if (ol.sphere.getDistance(tracks[i].coord, waypoint.coord) <= ZOOM_IN_DISTANCE) {
+          if (!zoomInMap.has(i)) zoomInMap.set(i, []);
+          zoomInMap.get(i).push(waypoint);
+        }
+      }
+    }
+    const hud = document.createElement("div");
+    hud.className = "stroll-hud";
+    document.getElementById("map").appendChild(hud);
+
+    const elmSaru = document.createElement("img");
+    elmSaru.src = "stroll/saru.png";
+    elmSaru.className = "stroll-marker";
+    const elmGoal = document.createElement("img");
+    elmGoal.src = "stroll/saru-goal.png";
+    elmGoal.className = "stroll-marker";
+
+    const overlay = new ol.Overlay({ element: elmSaru, positioning: "center-center" });
+    map.addOverlay(overlay);
+    overlay.setPosition(tracks[0].coord);
+
+    const formatTime = (seconds) => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return [h, m, s].map((v) => v.toString().padStart(2, "0")).join(":");
+    };
+    // 値と単位を別々に返す([値, 単位])。数値の桁数が変わっても単位の
+    // 表示位置がズレないよう、setHud側で数値部分だけを固定幅にするため。
+    const distanceText = (d) => [Math.round((d / 1000) * 100) / 100, "km"];
+    const elapsedText = (elapsed, speed) => [formatTime((elapsed * speed) / 1000), "hrs"];
+    // 区間の実速度(km/h)。distanceはメートル、rawMsは<when>由来の実時間の
+    // ミリ秒(SPEEDによる圧縮前の値)を渡す — 再生を何倍速にしても実際に
+    // 歩いた速さの表示は変わらないようにするため。
+    const speedText = (d, rawMs) => {
+      if (!rawMs) return [0, "km/h"];
+      return [Math.round((d / (rawMs / 1000)) * 3.6 * 10) / 10, "km/h"];
+    };
+    const statHtml = (icon, title, [value, unit]) =>
+      `<span class="stroll-stat" title="${title}"><span class="stroll-icon">${icon}</span>` +
+      `<span class="stroll-value"><span class="stroll-number">${value}</span><span class="stroll-unit">${unit}</span></span></span>`;
+    const setHud = (d, t, s) => {
+      hud.innerHTML =
+        statHtml("📏", "Distance", d) + statHtml("⏱️", "Elapsed", t) + statHtml("⚡", "Speed", s);
+    };
+
+    let total_distance = 0;
+    let total_time = 0;
+    for (const track of tracks) {
+      total_distance += track.distance;
+      total_time += track.timestamp;
+    }
+    setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+
+    const isOutside = (coord) => {
+      const mapSize = map.getSize();
+      const innerSize = [mapSize[0] - OFFSET * 2, mapSize[1] - OFFSET * 2];
+      const extent = map.getView().calculateExtent(innerSize);
+      return (
+        coord[0] >= extent[2] ||
+        coord[0] <= extent[0] ||
+        coord[1] >= extent[3] ||
+        coord[1] <= extent[1]
+      );
+    };
+
+    // TimeKeeper: requestAnimationFrameで経過時間を積算するだけの
+    // 汎用タイマー(stroll.jsのTimeKeeperと同じ考え方)。callbackの戻り値の
+    // 分だけ次フレームの経過時間をスキップできる(遠方へジャンプする間の
+    // 一時停止に使う。下のtk.start参照)。
+    function createTimeKeeper() {
+      const STOPPED = 0;
+      const PAUSED = 1;
+      const RUNNING = 2;
+      let callback;
+      let ref;
+      let prevTimestamp;
+      let elapsed = 0;
+      let state = STOPPED;
+      let skipTime = 0;
+
+      function loop(timestamp) {
+        if (prevTimestamp === undefined) prevTimestamp = timestamp;
+        timestamp += skipTime;
+        elapsed += timestamp - prevTimestamp;
+        skipTime += callback(Math.trunc(elapsed));
+        prevTimestamp = timestamp;
+        if (state === RUNNING) ref = requestAnimationFrame(loop);
+      }
+
+      return {
+        start(cb) {
+          if (state !== STOPPED) return;
+          state = RUNNING;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          elapsed = 0;
+          callback = cb;
+          ref = requestAnimationFrame(loop);
+        },
+        resume() {
+          if (state !== PAUSED) return;
+          state = RUNNING;
+          ref = requestAnimationFrame(loop);
+        },
+        pause() {
+          if (state !== RUNNING) return;
+          state = PAUSED;
+          prevTimestamp = undefined;
+          skipTime = 0;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        stop() {
+          state = STOPPED;
+          if (ref !== undefined) {
+            cancelAnimationFrame(ref);
+            ref = undefined;
+          }
+        },
+        getElapsed: () => elapsed,
+      };
+    }
+
+    const tk = createTimeKeeper();
+    let isRunning = false;
+    let legFrom = tracks[0].coord;
+    let legTo = tracks[0].coord;
+    let legDuration = 0;
+    let legStartElapsed = 0;
+    let suppressMoveHandlers = false;
+    let baseZoom = map.getView().getZoom();
+    let isNearMarker = false;
+
+    const legFraction = () => {
+      if (legDuration <= 0) return 1;
+      return Math.min(1, Math.max(0, (tk.getElapsed() - legStartElapsed) / legDuration));
+    };
+    const currentCoord = () => {
+      const fraction = legFraction();
+      return [
+        legFrom[0] + (legTo[0] - legFrom[0]) * fraction,
+        legFrom[1] + (legTo[1] - legFrom[1]) * fraction,
+      ];
+    };
+    const handleMoveStart = () => {
+      if (suppressMoveHandlers) return;
+      elmSaru.parentNode.style.transition = "";
+      overlay.setPosition(currentCoord());
+      tk.pause();
+    };
+    const handleMoveEnd = () => {
+      if (suppressMoveHandlers) return;
+      if (isRunning) baseZoom = map.getView().getZoom();
+      const remaining = legDuration * (1 - legFraction());
+      elmSaru.parentNode.style.transition = remaining > 0 ? `all ${remaining}ms linear` : "";
+      overlay.setPosition(legTo);
+      tk.resume();
+    };
+
+    elmSaru.onclick = () => {
+      if (isRunning) return;
+      isRunning = true;
+      map.un("pointermove", handlePointerMove);
+      // クリックした瞬間に開始地点へ寄る(stroll.jsのelmKuma.onclickと同じ
+      // 考え方)。この時点のズームをbaseZoomにする(以後ユーザーが手動で
+      // ズームを変えればhandleMoveEndがそれを新しいbaseZoomに更新する)。
+      map.getView().setCenter(tracks[0].coord);
+      map.getView().setZoom(START_ZOOM);
+      baseZoom = START_ZOOM;
+      // ゴール到達後にリプレイした時、前回終了時点の値(ゴール地点の座標)が
+      // 残らないよう区間状態を開始地点にリセットする。
+      legFrom = tracks[0].coord;
+      legTo = tracks[0].coord;
+      legDuration = 0;
+      legStartElapsed = 0;
+      isNearMarker = false;
+      let index = 0;
+      let distance = 0;
+      let timestamp = 0;
+      let currentSpeedText = ["-", ""];
+
+      tk.start((elapsed) => {
+        // 距離/速度はadvanceToTrack内(区間が進んだ時)だけ更新し、経過時間
+        // だけ毎フレーム更新する(stroll.jsのelmKuma.onclickと同じ考え方。
+        // distance/speedを毎フレーム上書きすると区間の途中で表示が
+        // リセットされてしまう)。
+        setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+        if (timestamp <= elapsed) {
+          if (index < tracks.length) {
+            setChartPoint(index);
+            const track = tracks[index];
+            // track.timestampは<when>由来の実時間(ms)。再生(timestamp
+            // アキュムレータ/CSS transition)はtk.elapsed(実時間)と直接
+            // 比較するため、SPEED倍だけ圧縮したlegMsを使う。速度表示だけは
+            // 圧縮前のtrack.timestampをそのまま渡して実際の歩行速度を出す
+            // (ここをtrack.timestampのままにするとSPEED倍遅く進む上、
+            // speedTextの分母も引きずられて速度が0近くに丸まっていた)。
+            const advanceToTrack = () => {
+              const legMs = track.timestamp / SPEED;
+              distance += track.distance;
+              timestamp += legMs;
+              legFrom = legTo;
+              legTo = track.coord;
+              legDuration = legMs;
+              legStartElapsed = elapsed;
+              elmSaru.parentNode.style.transition = `all ${legMs}ms linear`;
+              overlay.setPosition(track.coord);
+              currentSpeedText = speedText(track.distance, track.timestamp);
+              setHud(distanceText(distance), elapsedText(elapsed, SPEED), currentSpeedText);
+              index++;
+            };
+            // waypointに近づいたら拡大し、離れたらbaseZoomに戻す
+            // (stroll.jsのzoomInMap/NEAR_MARKER_ZOOMと同じ考え方)。今の
+            // indexの100m圏内にwaypointがあるかどうかだけで判定する
+            // (訪問済みかどうかは見ない。一度圏内→圏外→圏内と出入りしてから
+            // 最接近するルートで、既訪問扱いにして最接近時のズームを
+            // 取りこぼすことがあったため)。
+            const zoomMarkers = zoomInMap.get(index) || [];
+            const shouldZoomIn = zoomMarkers.length > 0;
+            const zoomChanged = shouldZoomIn !== isNearMarker;
+            if (isOutside(track.coord) || zoomChanged) {
+              isNearMarker = shouldZoomIn;
+              suppressMoveHandlers = true;
+              tk.pause();
+              elmSaru.parentNode.style.transition = "";
+              map.getView().setCenter(track.coord);
+              if (zoomChanged) {
+                map.getView().setZoom(shouldZoomIn ? NEAR_MARKER_ZOOM : baseZoom);
+              }
+              const onMoveEnd = () => {
+                map.un("moveend", onMoveEnd);
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    suppressMoveHandlers = false;
+                    tk.resume();
+                    advanceToTrack();
+                  });
+                });
+              };
+              map.on("moveend", onMoveEnd);
+            } else {
+              advanceToTrack();
+            }
+          } else {
+            elmSaru.parentNode.style.transition = "";
+            overlay.setElement(elmGoal);
+            elmGoal.onclick = () => {
+              setChartPoint(0);
+              overlay.setElement(elmSaru);
+              overlay.setPosition(tracks[0].coord);
+              setHud(distanceText(total_distance), elapsedText(total_time, 1), ["Click to play", ""]);
+              map.getView().fit(source.getExtent(), { size: map.getSize(), padding: [40, 40, 40, 40] });
+            };
+            map.un("movestart", handleMoveStart);
+            map.un("moveend", handleMoveEnd);
+            map.on("pointermove", handlePointerMove);
+            tk.stop();
+            isRunning = false;
+          }
+        }
+        // 遠方へのジャンプでカメラをパンしている間はtk.pause()するため、
+        // 6時間以上先にジャンプする区間だけはその間の経過時間をスキップする
+        // (パン待ちのために実時間で6時間相当も止まらせないため。
+        // stroll.jsのelmKuma.onclickと同じ考え方)。
+        const hour = ((timestamp - elapsed) * SPEED) / 1000 / 3600;
+        return hour >= 6 ? timestamp - elapsed : 0;
+      });
+      map.on("movestart", handleMoveStart);
+      map.on("moveend", handleMoveEnd);
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") tk.resume();
+      if (document.visibilityState === "hidden") tk.pause();
+    });
+  }
+
+  const popup = document.getElementById("popup");
+  const popupOverlay = new ol.Overlay({ element: popup, positioning: "bottom-center" });
+  map.addOverlay(popupOverlay);
+
+  map.on("click", (evt) => {
+    const feature = map.forEachFeatureAtPixel(evt.pixel, (f) => f);
+    if (!feature || feature.getGeometry().getType() !== "Point") {
+      popup.style.display = "none";
+      return;
+    }
+
+    const name = feature.get("name") || "";
+    const photos = photosByWaypoint[name] || [];
+    if (!photos[0]) {
+      popup.style.display = "none";
+      return;
+    }
+    popup.innerHTML = '<img src="' + encodeURI(photos[0].image_path) + '">';
+    popup.style.display = "block";
+    popupOverlay.setPosition(feature.getGeometry().getCoordinates());
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- ol/d3/c3のバージョンはSRI(integrity属性)のハッシュと対になっているため、
+     更新する際は両方を同時に変更すること(CDN側のファイルが変わると
+     integrityの検証に失敗してリソースの読み込みごと拒否される)。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css" integrity="sha384-Jpg1uvTciFJuHq+90Ly0/2SKRT9yS5OhbIN5FuFoFWji9fc44ok8xxO88CJi8Z5W" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js" integrity="sha384-tXckLaRmTS0tB/MZq9JW8E3Q7SknBYk6p7upTq73sN1UKcD8zwnvi2WykQi1pwAX" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js" integrity="sha384-M06Cb6r/Yrkprjr7ngOrJlzgekrkkdmGZDES/SUnkUpUol0/qjsaQWQfLzq0mcfg" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css" integrity="sha384-9Lyl02xl1c0mLtz2jmyFnSbGH3FddWR0f/1GCnSPOdzy5X0Nf2riz6V3AhDki55K" crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js" integrity="sha384-xOzJ6ocROuPNeY/PUgXyXgiPyvvePCiWVkKXro4Lb1gWoGJOtrJw+zrpf3NBx1B5" crossorigin="anonymous"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけbodyの高さが伸び、それに合わせて
+     iframe自体の高さも下のpostMessage(mkdocs_export.md.eexが受信)で
+     自分で広げる。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<!-- データはCSPのscript-srcを緩めずに済むよう非実行のapplication/jsonタグで
+     埋め込み、実処理は外部のmap-viewer.js(全トラックページ共有、docs/photo-map
+     直下に1つだけ置かれる。MkdocsExport.export_to_mkdocs_impl!/1参照)に
+     分離している。 -->
+<script type="application/json" id="map-data">{"hidden":[],"type":"walking","base_name":"橋本-中央林間","kml":"\u003Ckml xmlns=\"http:\/\/www.opengis.net\/kml\/2.2\" xmlns:gx=\"http:\/\/www.google.com\/kml\/ext\/2.2\" xmlns:xsi=\"http:\/\/www.w3.org\/2001\/XMLSchema-instance\" xsi:schemaLocation=\"http:\/\/www.opengis.net\/kml\/2.2 https:\/\/developers.google.com\/kml\/schema\/kml22gx.xsd\">\u003CPlacemark id=\"ab4854cb-bbd6-471b-9050-1ba201bd5c82\">\u003Cname>さがみはらリニアひろば_ab4854cb-bbd6-471b-9050-1ba201bd5c82\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/photo_camera.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>photo_camera\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>139.34426,35.593879\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003C\/kml>","photos":{"さがみはらリニアひろば_ab4854cb-bbd6-471b-9050-1ba201bd5c82":[{"image_path":"images\/N4520001.webp"},{"image_path":"images\/N4520004.webp"}]},"icons":{"さがみはらリニアひろば_ab4854cb-bbd6-471b-9050-1ba201bd5c82":"photo_camera"}}</script>
+<script src="../track-type-style.js?v=c5d1a975b2fe"></script>
+<script src="../map-viewer.js?v=90e6eae3adf8"></script>
+</body>
+</html>

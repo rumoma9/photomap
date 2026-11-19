@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- ol/d3/c3のバージョンはSRI(integrity属性)のハッシュと対になっているため、
+     更新する際は両方を同時に変更すること(CDN側のファイルが変わると
+     integrityの検証に失敗してリソースの読み込みごと拒否される)。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css" integrity="sha384-Jpg1uvTciFJuHq+90Ly0/2SKRT9yS5OhbIN5FuFoFWji9fc44ok8xxO88CJi8Z5W" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js" integrity="sha384-tXckLaRmTS0tB/MZq9JW8E3Q7SknBYk6p7upTq73sN1UKcD8zwnvi2WykQi1pwAX" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.16.0/d3.min.js" integrity="sha384-M06Cb6r/Yrkprjr7ngOrJlzgekrkkdmGZDES/SUnkUpUol0/qjsaQWQfLzq0mcfg" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.css" integrity="sha384-9Lyl02xl1c0mLtz2jmyFnSbGH3FddWR0f/1GCnSPOdzy5X0Nf2riz6V3AhDki55K" crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/c3/0.7.20/c3.min.js" integrity="sha384-xOzJ6ocROuPNeY/PUgXyXgiPyvvePCiWVkKXro4Lb1gWoGJOtrJw+zrpf3NBx1B5" crossorigin="anonymous"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  /* 地図はtracklogの有無に関わらず常に450px固定。
+     チャートがある場合はその分だけbodyの高さが伸び、それに合わせて
+     iframe自体の高さも下のpostMessage(mkdocs_export.md.eexが受信)で
+     自分で広げる。 */
+  /* チャートが無い(track無し)場合は地図単体が全体になるので、地図側の
+     角を全て丸める。チャートがある場合は上下に積むので、継ぎ目になる
+     地図の下側/チャートの上側は角丸にせず、外側の角(地図の上・
+     チャートの下)だけ丸める。 */
+  #map {
+    position: relative;
+    width: 100%;
+    height: 450px;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  body.has-chart #map { border-radius: 4px 4px 0 0; }
+  #chart {
+    display: none;
+    width: 100%;
+    height: 200px;
+    flex: none;
+    background-color: #242424;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  #chart text { fill: #c8c8c2; }
+  #chart .c3-axis path,
+  #chart .c3-axis line { stroke: #c8c8c2; }
+  body.has-chart #chart { display: block; }
+  /* 再生アニメーション中の距離/経過時間/速度は、チャート分の高さを
+     増やさずに済むよう地図左下に重ねて表示する
+     (mkdocs_export.exのiframe_height計算と二重に合わせずに済む)。 */
+  .stroll-hud {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.5);
+    color: #222;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: sans-serif;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  /* 値の桁数が変わってもHUD自体の横幅が変動しないよう、
+     項目ごとに固定幅にする(表示中に再生ボタンの位置がガタつかないため)。
+     ラベル文字列(DISTANCE等)の代わりに絵文字アイコンを使い、アイコン+
+     数値+単位を1行にまとめることでラベルを別行にしていた分の高さを
+     詰めている。 */
+  .stroll-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    width: 90px;
+    flex: none;
+    white-space: nowrap;
+  }
+  .stroll-icon {
+    font-size: 11px;
+  }
+  .stroll-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 数値部分だけを右揃え・固定幅にすることで、桁数が変わっても単位
+     ("km"/"hrs"/"km/h")の表示位置がズレないようにする。 */
+  .stroll-number {
+    display: inline-block;
+    min-width: 3.5em;
+    text-align: right;
+  }
+  .stroll-unit {
+    display: inline-block;
+    margin-left: 0.3em;
+  }
+  .stroll-marker {
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chart"></div>
+<!-- データはCSPのscript-srcを緩めずに済むよう非実行のapplication/jsonタグで
+     埋め込み、実処理は外部のmap-viewer.js(全トラックページ共有、docs/photo-map
+     直下に1つだけ置かれる。MkdocsExport.export_to_mkdocs_impl!/1参照)に
+     分離している。 -->
+<script type="application/json" id="map-data">{"hidden":[],"type":"walking","base_name":"森将軍塚古墳","kml":"\u003Ckml xmlns=\"http:\/\/www.opengis.net\/kml\/2.2\" xmlns:gx=\"http:\/\/www.google.com\/kml\/ext\/2.2\" xmlns:xsi=\"http:\/\/www.w3.org\/2001\/XMLSchema-instance\" xsi:schemaLocation=\"http:\/\/www.opengis.net\/kml\/2.2 https:\/\/developers.google.com\/kml\/schema\/kml22gx.xsd\">\u003CDocument>\u003CPlacemark id=\"99c10a51-db2d-4cf8-a80d-ee0e76bbbe17\">\u003Cname>科野のムラ_99c10a51-db2d-4cf8-a80d-ee0e76bbbe17\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/photo_camera.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>photo_camera\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.136748,36.533721\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"9fe5ee72-4d85-4aba-830b-80ed1c60b405\">\u003Cname>森将軍塚古墳_9fe5ee72-4d85-4aba-830b-80ed1c60b405\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/kofun.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>kofun\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.137227,36.53135\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CPlacemark id=\"007dd5ba-eb3f-47f9-b46a-31af91695ddd\">\u003Cname>あんずの里物産館_007dd5ba-eb3f-47f9-b46a-31af91695ddd\u003C\/name>\u003CStyle>\u003CIconStyle>\u003Cscale>1.125\u003C\/scale>\u003CIcon>\u003Chref>\/images\/waypoint-icons\/storefront.svg\u003C\/href>\u003Cgx:w>36\u003C\/gx:w>\u003Cgx:h>36\u003C\/gx:h>\u003C\/Icon>\u003C\/IconStyle>\u003C\/Style>\u003CExtendedData>\u003CData name=\"icon\">\u003Cvalue>storefront\u003C\/value>\u003C\/Data>\u003C\/ExtendedData>\u003CPoint>\u003Ccoordinates>138.138481,36.534986\u003C\/coordinates>\u003C\/Point>\u003C\/Placemark>\u003CFolder>\u003CPlacemark>\u003Cname>森将軍塚古墳\u003C\/name>\u003Cgx:Track>\u003Cwhen>2025-09-13T00:34:33.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:35:04.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:35:27.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:35:45.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:36:19.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:36:51.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:37:03.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:37:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:37:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:37:37.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:37:58.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:38:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:38:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:38:44.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:39:02.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:39:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:39:21.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:39:54.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:40:09.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:40:23.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:40:33.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:40:48.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:41:21.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:41:38.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:42:11.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:42:35.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:42:41.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:43:27.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:43:47.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:43:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:14.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:25.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:29.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:46.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:44:54.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:21.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:25.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:40.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:52.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:45:59.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:46:45.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:47:07.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:47:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:48:14.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:48:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:49:57.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:50:04.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:50:29.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:50:40.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:51:00.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:51:14.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:51:26.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:51:56.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:52:10.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:53:00.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:53:16.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:53:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:53:42.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:53:57.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:54:11.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:54:26.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:54:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:55:05.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:55:26.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:55:47.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:55:58.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:56:12.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:56:18.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:56:35.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:57:00.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:58:48.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:59:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:59:50.000Z\u003C\/when>\u003Cwhen>2025-09-13T00:59:56.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:00:10.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:00:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:01:24.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:01:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:02:14.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:02:49.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:03:20.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:03:29.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:03:39.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:05.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:16.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:27.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:41.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:04:52.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:06:41.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:07:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:08:15.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:08:24.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:08:43.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:09:01.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:09:46.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:09:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:10:00.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:10:02.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:10:25.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:11:00.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:11:20.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:12:07.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:12:20.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:12:35.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:12:47.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:13:05.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:13:18.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:13:23.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:13:36.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:13:56.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:14:07.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:14:32.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:14:40.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:14:51.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:14:59.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:15:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:15:21.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:15:58.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:02.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:11.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:26.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:32.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:42.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:16:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:17:01.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:17:21.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:17:40.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:17:44.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:17:52.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:18:03.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:18:07.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:18:18.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:18:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:18:37.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:01.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:23.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:30.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:35.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:41.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:19:54.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:01.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:18.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:29.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:37.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:44.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:20:53.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:21:07.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:21:18.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:21:28.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:21:42.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:22:06.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:22:15.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:22:22.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:22:35.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:22:55.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:23:14.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:23:19.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:23:26.000Z\u003C\/when>\u003Cwhen>2025-09-13T01:24:19.000Z\u003C\/when>\u003Cgx:coord>138.1377524 36.5336175 363.6\u003C\/gx:coord>\u003Cgx:coord>138.1376556 36.5333212 366.4\u003C\/gx:coord>\u003Cgx:coord>138.13761 36.5331057 370.6\u003C\/gx:coord>\u003Cgx:coord>138.1376952 36.5330018 370.8\u003C\/gx:coord>\u003Cgx:coord>138.1379582 36.5328724 371.2\u003C\/gx:coord>\u003Cgx:coord>138.1383206 36.5327499 374.6\u003C\/gx:coord>\u003Cgx:coord>138.1384152 36.5326991 376.6\u003C\/gx:coord>\u003Cgx:coord>138.1383599 36.5326387 379\u003C\/gx:coord>\u003Cgx:coord>138.1380245 36.5326492 379.6\u003C\/gx:coord>\u003Cgx:coord>138.1379555 36.5326162 381\u003C\/gx:coord>\u003Cgx:coord>138.1380325 36.532534 384.4\u003C\/gx:coord>\u003Cgx:coord>138.1383085 36.5324487 385.6\u003C\/gx:coord>\u003Cgx:coord>138.1385772 36.5323964 388\u003C\/gx:coord>\u003Cgx:coord>138.1388351 36.5323183 391.2\u003C\/gx:coord>\u003Cgx:coord>138.1388931 36.5322897 394\u003C\/gx:coord>\u003Cgx:coord>138.1388658 36.5322569 394.4\u003C\/gx:coord>\u003Cgx:coord>138.1388219 36.5322405 397.2\u003C\/gx:coord>\u003Cgx:coord>138.1387405 36.532205 402\u003C\/gx:coord>\u003Cgx:coord>138.138647 36.5322106 403.6\u003C\/gx:coord>\u003Cgx:coord>138.1385715 36.5322033 405.2\u003C\/gx:coord>\u003Cgx:coord>138.1384961 36.5321909 406.4\u003C\/gx:coord>\u003Cgx:coord>138.1384187 36.5321736 409\u003C\/gx:coord>\u003Cgx:coord>138.1385067 36.5321039 413.4\u003C\/gx:coord>\u003Cgx:coord>138.1386491 36.5320814 415.6\u003C\/gx:coord>\u003Cgx:coord>138.1387932 36.5320578 420.8\u003C\/gx:coord>\u003Cgx:coord>138.1389664 36.5320054 423.6\u003C\/gx:coord>\u003Cgx:coord>138.1389428 36.531964 424.4\u003C\/gx:coord>\u003Cgx:coord>138.1388824 36.5319399 424.8\u003C\/gx:coord>\u003Cgx:coord>138.1387846 36.5319073 427\u003C\/gx:coord>\u003Cgx:coord>138.1387094 36.5318917 428.4\u003C\/gx:coord>\u003Cgx:coord>138.1386554 36.5318833 430.6\u003C\/gx:coord>\u003Cgx:coord>138.1385756 36.5318785 431.8\u003C\/gx:coord>\u003Cgx:coord>138.1384657 36.5318624 433.4\u003C\/gx:coord>\u003Cgx:coord>138.1384663 36.531819 434\u003C\/gx:coord>\u003Cgx:coord>138.1385309 36.5317587 436.6\u003C\/gx:coord>\u003Cgx:coord>138.1386051 36.5317149 437.4\u003C\/gx:coord>\u003Cgx:coord>138.1386917 36.5316744 439\u003C\/gx:coord>\u003Cgx:coord>138.1388144 36.5316501 442.2\u003C\/gx:coord>\u003Cgx:coord>138.1388547 36.5316341 442.6\u003C\/gx:coord>\u003Cgx:coord>138.1388854 36.5316353 444\u003C\/gx:coord>\u003Cgx:coord>138.1388969 36.5316265 445.8\u003C\/gx:coord>\u003Cgx:coord>138.1389097 36.5316163 446.6\u003C\/gx:coord>\u003Cgx:coord>138.1390357 36.5315889 451.4\u003C\/gx:coord>\u003Cgx:coord>138.1391167 36.5315489 455.8\u003C\/gx:coord>\u003Cgx:coord>138.139119 36.5315206 457.2\u003C\/gx:coord>\u003Cgx:coord>138.1391309 36.5314927 458\u003C\/gx:coord>\u003Cgx:coord>138.1390329 36.5314739 459.6\u003C\/gx:coord>\u003Cgx:coord>138.1389505 36.5314403 464\u003C\/gx:coord>\u003Cgx:coord>138.1389216 36.5314533 464.2\u003C\/gx:coord>\u003Cgx:coord>138.1387527 36.5314476 465.6\u003C\/gx:coord>\u003Cgx:coord>138.1386451 36.5314399 466.6\u003C\/gx:coord>\u003Cgx:coord>138.1384874 36.531447 469.2\u003C\/gx:coord>\u003Cgx:coord>138.1383985 36.5314479 470.6\u003C\/gx:coord>\u003Cgx:coord>138.1382715 36.5314508 472.8\u003C\/gx:coord>\u003Cgx:coord>138.1380181 36.5314249 477.8\u003C\/gx:coord>\u003Cgx:coord>138.1380151 36.531415 478.4\u003C\/gx:coord>\u003Cgx:coord>138.1379994 36.5314269 479.4\u003C\/gx:coord>\u003Cgx:coord>138.1379859 36.5314129 479.6\u003C\/gx:coord>\u003Cgx:coord>138.1379376 36.5314077 479.8\u003C\/gx:coord>\u003Cgx:coord>138.1378577 36.5313749 480.2\u003C\/gx:coord>\u003Cgx:coord>138.1378427 36.5313861 480.2\u003C\/gx:coord>\u003Cgx:coord>138.1378091 36.5313968 480.8\u003C\/gx:coord>\u003Cgx:coord>138.1378043 36.5313413 479.6\u003C\/gx:coord>\u003Cgx:coord>138.1377753 36.5313322 478.6\u003C\/gx:coord>\u003Cgx:coord>138.13747 36.5311278 478.4\u003C\/gx:coord>\u003Cgx:coord>138.1372519 36.5310028 480.6\u003C\/gx:coord>\u003Cgx:coord>138.1371718 36.5310679 483.6\u003C\/gx:coord>\u003Cgx:coord>138.1371169 36.5310455 484.2\u003C\/gx:coord>\u003Cgx:coord>138.1370496 36.5310713 487.4\u003C\/gx:coord>\u003Cgx:coord>138.1370551 36.5311425 487.8\u003C\/gx:coord>\u003Cgx:coord>138.137169 36.5312425 488\u003C\/gx:coord>\u003Cgx:coord>138.1372703 36.5312911 491.2\u003C\/gx:coord>\u003Cgx:coord>138.1372569 36.5312982 491.8\u003C\/gx:coord>\u003Cgx:coord>138.1372577 36.5313833 491.6\u003C\/gx:coord>\u003Cgx:coord>138.1372199 36.5313658 492.4\u003C\/gx:coord>\u003Cgx:coord>138.1372359 36.5313957 492\u003C\/gx:coord>\u003Cgx:coord>138.1373309 36.53144 490.8\u003C\/gx:coord>\u003Cgx:coord>138.1373462 36.5314502 490.4\u003C\/gx:coord>\u003Cgx:coord>138.1373474 36.5314424 491\u003C\/gx:coord>\u003Cgx:coord>138.1373122 36.5314419 491.2\u003C\/gx:coord>\u003Cgx:coord>138.137336 36.5314461 490.4\u003C\/gx:coord>\u003Cgx:coord>138.137341 36.5314326 490.6\u003C\/gx:coord>\u003Cgx:coord>138.1372361 36.5313854 491\u003C\/gx:coord>\u003Cgx:coord>138.1372186 36.5313394 491.2\u003C\/gx:coord>\u003Cgx:coord>138.1372169 36.5313813 490.8\u003C\/gx:coord>\u003Cgx:coord>138.137237 36.531276 490.4\u003C\/gx:coord>\u003Cgx:coord>138.137212 36.5312516 489.6\u003C\/gx:coord>\u003Cgx:coord>138.1371832 36.5312532 488.4\u003C\/gx:coord>\u003Cgx:coord>138.1371599 36.5312268 487.6\u003C\/gx:coord>\u003Cgx:coord>138.1370488 36.5312051 487\u003C\/gx:coord>\u003Cgx:coord>138.1370108 36.5311788 488\u003C\/gx:coord>\u003Cgx:coord>138.1369494 36.5311898 485.8\u003C\/gx:coord>\u003Cgx:coord>138.1369633 36.5311643 489\u003C\/gx:coord>\u003Cgx:coord>138.1369117 36.531237 482.6\u003C\/gx:coord>\u003Cgx:coord>138.1369203 36.5312884 481.8\u003C\/gx:coord>\u003Cgx:coord>138.1369304 36.5312885 480.8\u003C\/gx:coord>\u003Cgx:coord>138.136876 36.5312777 480.4\u003C\/gx:coord>\u003Cgx:coord>138.1366024 36.5310647 479.2\u003C\/gx:coord>\u003Cgx:coord>138.1365265 36.5310208 479\u003C\/gx:coord>\u003Cgx:coord>138.1364908 36.5310348 479\u003C\/gx:coord>\u003Cgx:coord>138.1364731 36.531027 479\u003C\/gx:coord>\u003Cgx:coord>138.1364212 36.5310436 478.8\u003C\/gx:coord>\u003Cgx:coord>138.136347 36.5311153 477.4\u003C\/gx:coord>\u003Cgx:coord>138.1364001 36.5311761 472.6\u003C\/gx:coord>\u003Cgx:coord>138.1364785 36.5313466 463\u003C\/gx:coord>\u003Cgx:coord>138.1362862 36.5315126 460.2\u003C\/gx:coord>\u003Cgx:coord>138.1362881 36.5316586 457.4\u003C\/gx:coord>\u003Cgx:coord>138.1360685 36.5315482 456.2\u003C\/gx:coord>\u003Cgx:coord>138.1359444 36.5315 454.8\u003C\/gx:coord>\u003Cgx:coord>138.1358697 36.5314721 453.2\u003C\/gx:coord>\u003Cgx:coord>138.1358183 36.5314708 452.6\u003C\/gx:coord>\u003Cgx:coord>138.1358169 36.5314915 451.8\u003C\/gx:coord>\u003Cgx:coord>138.1359182 36.5315808 449.4\u003C\/gx:coord>\u003Cgx:coord>138.1359886 36.5316691 448\u003C\/gx:coord>\u003Cgx:coord>138.1361788 36.5318289 444.4\u003C\/gx:coord>\u003Cgx:coord>138.1362125 36.5319023 443.2\u003C\/gx:coord>\u003Cgx:coord>138.1361673 36.5320023 441.6\u003C\/gx:coord>\u003Cgx:coord>138.1360736 36.5320496 440.2\u003C\/gx:coord>\u003Cgx:coord>138.136082 36.5320884 439\u003C\/gx:coord>\u003Cgx:coord>138.136212 36.5322042 436\u003C\/gx:coord>\u003Cgx:coord>138.1362114 36.5322446 427.2\u003C\/gx:coord>\u003Cgx:coord>138.1360788 36.532273 426.6\u003C\/gx:coord>\u003Cgx:coord>138.1358871 36.5322486 425\u003C\/gx:coord>\u003Cgx:coord>138.1358141 36.5322486 422.6\u003C\/gx:coord>\u003Cgx:coord>138.1357789 36.5322727 421.4\u003C\/gx:coord>\u003Cgx:coord>138.1357882 36.5322852 420.2\u003C\/gx:coord>\u003Cgx:coord>138.1358375 36.5323109 419.4\u003C\/gx:coord>\u003Cgx:coord>138.1359887 36.5323392 419.2\u003C\/gx:coord>\u003Cgx:coord>138.1360343 36.5323736 418.8\u003C\/gx:coord>\u003Cgx:coord>138.1361149 36.532538 415.2\u003C\/gx:coord>\u003Cgx:coord>138.1362824 36.532685 414.4\u003C\/gx:coord>\u003Cgx:coord>138.136284 36.5327055 414.4\u003C\/gx:coord>\u003Cgx:coord>138.136228 36.5327364 413.2\u003C\/gx:coord>\u003Cgx:coord>138.1361496 36.5327158 411.2\u003C\/gx:coord>\u003Cgx:coord>138.1361097 36.5327125 410.4\u003C\/gx:coord>\u003Cgx:coord>138.136027 36.5326982 408.6\u003C\/gx:coord>\u003Cgx:coord>138.1359578 36.5326428 407.2\u003C\/gx:coord>\u003Cgx:coord>138.135937 36.5326117 407\u003C\/gx:coord>\u003Cgx:coord>138.1358391 36.5326378 405.6\u003C\/gx:coord>\u003Cgx:coord>138.1356103 36.5325842 402.8\u003C\/gx:coord>\u003Cgx:coord>138.1355359 36.5325417 401.8\u003C\/gx:coord>\u003Cgx:coord>138.1354748 36.5325337 401.4\u003C\/gx:coord>\u003Cgx:coord>138.1354339 36.5325419 400.4\u003C\/gx:coord>\u003Cgx:coord>138.1354208 36.5325685 400\u003C\/gx:coord>\u003Cgx:coord>138.1354443 36.5326021 399.8\u003C\/gx:coord>\u003Cgx:coord>138.1355881 36.5326789 398.2\u003C\/gx:coord>\u003Cgx:coord>138.1357064 36.5327261 396.4\u003C\/gx:coord>\u003Cgx:coord>138.1357696 36.5328011 395.6\u003C\/gx:coord>\u003Cgx:coord>138.1358383 36.5328207 394.6\u003C\/gx:coord>\u003Cgx:coord>138.135931 36.5328794 393.2\u003C\/gx:coord>\u003Cgx:coord>138.1360431 36.5330026 391.4\u003C\/gx:coord>\u003Cgx:coord>138.1360944 36.533121 389.8\u003C\/gx:coord>\u003Cgx:coord>138.136169 36.5332076 389\u003C\/gx:coord>\u003Cgx:coord>138.1363243 36.5332864 387.6\u003C\/gx:coord>\u003Cgx:coord>138.1366246 36.5332673 384\u003C\/gx:coord>\u003Cgx:coord>138.1367249 36.533271 382\u003C\/gx:coord>\u003Cgx:coord>138.1368056 36.5332824 381\u003C\/gx:coord>\u003Cgx:coord>138.1369766 36.5332701 379.2\u003C\/gx:coord>\u003Cgx:coord>138.1371877 36.5332224 376.6\u003C\/gx:coord>\u003Cgx:coord>138.1374573 36.5331228 375\u003C\/gx:coord>\u003Cgx:coord>138.1375329 36.533127 374.4\u003C\/gx:coord>\u003Cgx:coord>138.137594 36.5331883 373.4\u003C\/gx:coord>\u003Cgx:coord>138.1377886 36.5337011 366\u003C\/gx:coord>\u003C\/gx:Track>\u003C\/Placemark>\u003C\/Folder>\u003C\/Document>\u003C\/kml>","photos":{"森将軍塚古墳_9fe5ee72-4d85-4aba-830b-80ed1c60b405":[{"image_path":"images\/N4730033.webp"},{"image_path":"images\/N4760009.webp"}]},"icons":{"あんずの里物産館_007dd5ba-eb3f-47f9-b46a-31af91695ddd":"storefront","森将軍塚古墳_9fe5ee72-4d85-4aba-830b-80ed1c60b405":"kofun","科野のムラ_99c10a51-db2d-4cf8-a80d-ee0e76bbbe17":"photo_camera"}}</script>
+<script src="../track-type-style.js?v=c5d1a975b2fe"></script>
+<script src="../map-viewer.js?v=90e6eae3adf8"></script>
+</body>
+</html>

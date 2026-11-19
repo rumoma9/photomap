@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://rumoma.f5.si/photomap/sitemap.xml
